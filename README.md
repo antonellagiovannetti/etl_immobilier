@@ -49,6 +49,7 @@ Projet_ETL_Immobilier/
 ├── src/
 │   ├── extract.py    # Extraction des données
 │   ├── transform.py  # Transformation et nettoyage
+│   ├── kpi.py        # KPIs
 │   └── load.py       # Chargement des données
 │
 ├── requirements.txt

@@ -36,7 +36,7 @@ pip install -r requirements.txt
 ```
 
 ## 4. Structure recommandée du projet
-
+```
 Projet_ETL_Immobilier/
 │
 ├── data/
@@ -53,3 +53,4 @@ Projet_ETL_Immobilier/
 │
 ├── requirements.txt
 └── README.md
+```

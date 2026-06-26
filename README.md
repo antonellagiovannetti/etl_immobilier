@@ -49,6 +49,7 @@ Projet_ETL_Immobilier/
 ├── notebooks/        # Notebooks d'exploration
 │
 ├── src/
+│   ├── API.py        # Enrichissement communes via geo.api.gouv.fr
 │   ├── extract.py    # Extraction des données
 │   ├── transform.py  # Transformation et nettoyage
 │   ├── kpi.py        # KPIs
@@ -78,6 +79,7 @@ POSTGRES_USER=admin
 POSTGRES_PASSWORD=admin
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
+GEO_API_COMMUNES_URL=https://geo.api.gouv.fr/communes
 ```
 
 Un fichier `.env.example` est fourni dans le repo comme modèle.
@@ -122,3 +124,42 @@ engine = create_engine(
     f"@{os.getenv('POSTGRES_HOST')}:{os.getenv('POSTGRES_PORT')}/{os.getenv('POSTGRES_DB')}"
 )
 ```
+
+---
+
+## 6. Bloc API communes
+
+Le fichier `src/API.py` contient un bloc de recuperation API. Il ne lit pas les fichiers du projet
+et n'ecrit pas de fichier de sortie : une autre etape du pipeline lui fournit une liste de villes,
+puis exploite le resultat retourne.
+
+L'URL de l'API doit rester dans l'environnement :
+
+```env
+GEO_API_COMMUNES_URL=https://geo.api.gouv.fr/communes
+```
+
+### 6.1 Fonction disponible
+
+```python
+from src.API import recuperer_infos_communes
+
+resultat = recuperer_infos_communes(["Lyon", "Paris"])
+```
+
+La fonction retourne un dictionnaire :
+
+- `data` : communes trouvees avec les champs utiles.
+- `errors` : villes non trouvees ou erreurs d'appel API.
+
+### 6.2 Champs recuperes
+
+- `latitude` : `centre.coordinates[1]`
+- `longitude` : `centre.coordinates[0]`
+- `code_insee` : `code`
+- `code_region` : `codeRegion`
+- `nom_region` : `region.nom`
+- `population` : `population`
+- `superficie_m2` : `surface * 10000`
+
+La densite n'est pas recuperee depuis l'API. Elle sera calculee ensuite dans la partie KPI.

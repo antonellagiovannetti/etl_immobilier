@@ -9,8 +9,25 @@ CREATE TABLE IF NOT EXISTS communes (
     departement     CHAR(2)         NOT NULL,
     ville           VARCHAR(100)    NOT NULL,
     latitude        FLOAT,
-    longitude       FLOAT
+    longitude       FLOAT,
+    code_insee      CHAR(5),
+    code_region     VARCHAR(3)
 );
+
+-- ── Données démographiques (geo.api.gouv.fr) ───────────────
+CREATE TABLE IF NOT EXISTS demographics (
+    id              SERIAL PRIMARY KEY,
+    id_ville        INTEGER         NOT NULL REFERENCES communes(id_ville),
+    code_insee      CHAR(5),
+    code_region     VARCHAR(3),
+    nom_region      VARCHAR(100),
+    population      INTEGER,
+    superficie_km2  FLOAT,
+    densite         FLOAT,
+    UNIQUE (id_ville)
+);
+
+CREATE INDEX IF NOT EXISTS idx_demographics_id_ville ON demographics(id_ville);
 
 -- ── Transactions immobilières (DVF) ────────────────────────
 CREATE TABLE IF NOT EXISTS transactions (

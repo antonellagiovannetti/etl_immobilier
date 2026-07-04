@@ -5,8 +5,11 @@ import os
 import time
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
+
+import pandas as pd
 
 
 API_FIELDS = (
@@ -19,23 +22,33 @@ API_FIELDS = (
     "centre",
 )
 
+IRL_SERIES_ID = "001515333"
+
+
+def _get_env_var(name: str) -> str | None:
+    value = os.getenv(name)
+    if value:
+        return value
+
+    env_path = Path(__file__).resolve().parents[1] / ".env"
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            if line.startswith(f"{name}="):
+                return line.split("=", 1)[1].strip()
+    return None
+
+
+def _require_env_var(name: str) -> str:
+    value = _get_env_var(name)
+    if not value:
+        raise RuntimeError(
+            f"{name} est manquant dans l'environnement. Ajoute-le dans .env ou .env.example."
+        )
+    return value.rstrip("/")
+
 
 def _get_api_url() -> str:
-    api_url = os.getenv("GEO_API_COMMUNES_URL")
-    if not api_url:
-        env_path = Path(__file__).resolve().parents[1] / ".env"
-        if env_path.exists():
-            for line in env_path.read_text().splitlines():
-                if line.startswith("GEO_API_COMMUNES_URL="):
-                    api_url = line.split("=", 1)[1].strip()
-                    break
-
-    if not api_url:
-        raise RuntimeError(
-            "GEO_API_COMMUNES_URL est manquant dans l'environnement. "
-            "Ajoute-le dans .env ou .env.example."
-        )
-    return api_url.rstrip("/")
+    return _require_env_var("GEO_API_COMMUNES_URL")
 
 
 def _call_api(url: str, params: dict[str, str], timeout: int, retries: int) -> list[dict[str, Any]]:
@@ -145,6 +158,24 @@ def recuperer_infos_communes(
             print(f"  - {error['ville']}: {error['error']}")
 
     return {"data": data, "errors": errors}
+
+
+def recuperer_irl(timeout: int = 60) -> pd.DataFrame:
+    """Recupere l'historique complet de l'IRL via l'API SDMX publique de l'INSEE
+    (serie BDM 001515333, mise a jour trimestrielle).
+
+    La fonction ne lit aucun fichier local et n'ecrit aucun fichier.
+    """
+    request = urllib.request.Request(f"{_require_env_var('INSEE_SDMX_URL')}/{IRL_SERIES_ID}")
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        xml_bytes = response.read()
+
+    root = ET.fromstring(xml_bytes)
+    records = [
+        {"trimestre": obs.attrib["TIME_PERIOD"], "irl": float(obs.attrib["OBS_VALUE"])}
+        for obs in root.iter("Obs")
+    ]
+    return pd.DataFrame(records).sort_values("trimestre").reset_index(drop=True)
 
 
 if __name__ == "__main__":

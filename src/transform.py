@@ -12,11 +12,30 @@ sys.modules.setdefault("bottleneck", None)
 import pandas as pd
 
 try:
-    from .extract import RAW_TRANSACTIONS_PATH, extract_transactions_npz
+    from .extract import (
+        RAW_TRANSACTIONS_PATH,
+        extract_ircom,
+        extract_loyers_complement,
+        extract_lovac,
+        extract_transactions_npz,
+        extract_webstat_series,
+    )
+    from .API import recuperer_irl, recuperer_toutes_communes
 except ImportError:
-    from extract import RAW_TRANSACTIONS_PATH, extract_transactions_npz
+    from extract import (
+        RAW_TRANSACTIONS_PATH,
+        extract_ircom,
+        extract_loyers_complement,
+        extract_lovac,
+        extract_transactions_npz,
+        extract_webstat_series,
+    )
+    from API import recuperer_irl, recuperer_toutes_communes
 
 DEFAULT_OUTPUT_PATH = Path("data/final/transactions.npz")
+DEFAULT_FINAL_DIR = Path("data/final")
+RAW_DIR = Path("data/raw")
+ADDITIONAL_DATA_DIR = RAW_DIR / "additional_data"
 OUTPUT_COLUMNS = [
     "id_transaction",
     "id_ville",
@@ -40,15 +59,32 @@ def compute_global_id_ville(departement, id_ville) -> int:
     une valeur globalement unique a partir de departement + id_ville, sans
     toucher au schema. Corse (2A/2B) et DOM (971-976) sont geres a part
     pour rester dans des plages qui ne se recoupent pas.
+
+    Paris/Lyon/Marseille : les sources DVF/fiscales decoupent parfois ces
+    3 villes par arrondissement (75101-75120, 69381-69389, 13201-13216)
+    comme s'il s'agissait de communes distinctes, alors que le referentiel
+    officiel des communes (geo.api.gouv.fr) ne connait que la ville entiere
+    (75056, 69123, 13055). Sans ce regroupement, ces arrondissements ne
+    trouvent aucune correspondance dans communes.csv et sont silencieusement
+    perdus au chargement - ce qui ferait disparaitre Paris de l'analyse.
     """
     dep = str(departement).strip().upper()
+    commune_num = int(id_ville)
+
+    if dep == "75" and 101 <= commune_num <= 120:
+        commune_num = 56
+    elif dep == "69" and 381 <= commune_num <= 389:
+        commune_num = 123
+    elif dep == "13" and 201 <= commune_num <= 216:
+        commune_num = 55
+
     if dep[:2] == "2A":
         dep_code = 201
     elif dep[:2] == "2B":
         dep_code = 202
     else:
         dep_code = int(dep)
-    return dep_code * 1000 + int(id_ville)
+    return dep_code * 1000 + commune_num
 
 
 def transform_transactions(df: pd.DataFrame) -> pd.DataFrame:
@@ -108,6 +144,41 @@ def save_transactions_npz(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(output_path, **dataframe_to_npz_arrays(df))
+
+
+def build_communes(communes_api_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Construit le referentiel communes.csv a partir du referentiel complet
+    des communes francaises (API.recuperer_toutes_communes). Indexe par
+    code INSEE, donc sans ambiguite d'homonyme.
+    """
+    df = communes_api_df.copy()
+    deps_communes = df["code_insee"].map(split_insee_code)
+    df["departement"] = [dep for dep, _ in deps_communes]
+    df["id_ville"] = [
+        compute_global_id_ville(dep, commune) for dep, commune in deps_communes
+    ]
+    df = df.rename(columns={"ville_api": "ville"})
+    return df[
+        ["id_ville", "departement", "ville", "latitude", "longitude", "code_insee", "code_region"]
+    ].drop_duplicates(subset=["id_ville"]).reset_index(drop=True)
+
+
+def build_demographics(communes_api_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Construit demographics.csv (population, superficie, densite) a partir du
+    meme referentiel que build_communes.
+    """
+    df = communes_api_df.copy()
+    deps_communes = df["code_insee"].map(split_insee_code)
+    df["id_ville"] = [
+        compute_global_id_ville(dep, commune) for dep, commune in deps_communes
+    ]
+    df["superficie_km2"] = df["superficie_m2"] / 1_000_000
+    df["densite"] = df["population"] / df["superficie_km2"]
+    return df[
+        ["id_ville", "code_insee", "code_region", "nom_region", "population", "superficie_km2", "densite"]
+    ].drop_duplicates(subset=["id_ville"]).reset_index(drop=True)
 
 
 def split_insee_code(code: str) -> tuple[str, int]:
@@ -351,6 +422,70 @@ def compute_kpi(
     ].sort_values("score_attractivite", ascending=False).reset_index(drop=True)
 
 
+def run_full_pipeline(output_dir: str | Path = DEFAULT_FINAL_DIR) -> dict[str, dict[str, int]]:
+    """
+    Execute l'extraction + harmonisation des 8 sources et ecrit un CSV par
+    table dans output_dir (un fichier par table de db/schema.sql), au
+    format attendu par src/load.py (TABLES + DATA_DIR).
+
+    Les lignes dont l'id_ville ne correspond a aucune commune du
+    referentiel actuel (fusions de communes depuis 2014, arrondissements
+    de Marseille/Paris/Lyon presents dans les sources fiscales mais pas
+    dans le referentiel geographique, entrees hors-France) sont retirees
+    avant ecriture pour respecter les cles etrangeres de db/schema.sql.
+    Le detail (lignes gardees / ecartees) est retourne pour etre reporte.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stats: dict[str, dict[str, int]] = {}
+
+    def _write(df: pd.DataFrame, name: str) -> pd.DataFrame:
+        df.to_csv(output_dir / f"{name}.csv", index=False)
+        stats[name] = {"lignes": len(df), "ecartees": 0}
+        return df
+
+    def _write_filtered(df: pd.DataFrame, name: str, valid_ids: set[int]) -> pd.DataFrame:
+        before = len(df)
+        filtered = df[df["id_ville"].isin(valid_ids)].reset_index(drop=True)
+        filtered.to_csv(output_dir / f"{name}.csv", index=False)
+        stats[name] = {"lignes": len(filtered), "ecartees": before - len(filtered)}
+        return filtered
+
+    communes_api = recuperer_toutes_communes()
+    communes = _write(build_communes(communes_api), "communes")
+    _write(build_demographics(communes_api), "demographics")
+    valid_ids = set(communes["id_ville"])
+
+    transactions = transform_transactions(extract_transactions_npz())
+    transactions = _write_filtered(transactions, "transactions", valid_ids)
+    save_transactions_npz(transactions)  # conserve le format .npz historique
+
+    loyers = transform_loyers(
+        pd.read_csv(RAW_DIR / "loyers.csv"),
+        [extract_loyers_complement(2024), extract_loyers_complement(2025)],
+    )
+    loyers = _write_filtered(loyers, "loyers", valid_ids)
+
+    foyers = transform_foyers_fiscaux(pd.read_csv(RAW_DIR / "foyers_fiscaux.csv"), extract_ircom())
+    foyers = _write_filtered(foyers, "foyers_fiscaux", valid_ids)
+
+    parc = transform_parc_immobilier(pd.read_csv(RAW_DIR / "parc_immobilier.csv"), extract_lovac())
+    parc = _write_filtered(parc, "parc_immobilier", valid_ids)
+
+    macro = transform_indicateurs_macro(
+        extract_webstat_series(ADDITIONAL_DATA_DIR / "new_housing_loans_interest_rate.csv"),
+        extract_webstat_series(ADDITIONAL_DATA_DIR / "new_housing_loans_flow.csv"),
+        extract_webstat_series(ADDITIONAL_DATA_DIR / "household_debt_ratio.csv"),
+        recuperer_irl(),
+    )
+    _write(macro, "indicateurs_macro")
+
+    score = compute_kpi(transactions, loyers, foyers, parc)
+    _write_filtered(score, "score_attractivite", valid_ids)
+
+    return stats
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Transforme les transactions immobilieres brutes au format NPZ."
@@ -367,11 +502,24 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_OUTPUT_PATH,
         help=f"Fichier NPZ cible (defaut: {DEFAULT_OUTPUT_PATH})",
     )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Execute le pipeline complet (8 sources) et ecrit un CSV par table dans data/final/",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+
+    if args.full:
+        stats = run_full_pipeline()
+        for table, info in stats.items():
+            suffix = f" ({info['ecartees']:,} ecartees, id_ville inconnu)" if info["ecartees"] else ""
+            print(f"{table:<20} {info['lignes']:,} lignes -> data/final/{table}.csv{suffix}")
+        return
+
     df_raw = extract_transactions_npz(args.input)
     df_final = transform_transactions(df_raw)
     save_transactions_npz(df_final, args.output)

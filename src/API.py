@@ -160,6 +160,24 @@ def recuperer_infos_communes(
     return {"data": data, "errors": errors}
 
 
+def recuperer_toutes_communes(timeout: int = 30) -> pd.DataFrame:
+    """Recupere en un seul appel le referentiel complet des communes
+    francaises (code INSEE, departement, region, population, superficie,
+    coordonnees).
+
+    Contrairement a recuperer_infos_communes (qui cherche par nom de ville
+    et souffre des homonymes, ex. "Apremont" existe dans 7 departements),
+    cet appel est indexe par code INSEE : aucune ambiguite possible.
+    """
+    payload = _call_api(
+        f"{_get_api_url()}",
+        {"fields": ",".join(API_FIELDS), "format": "json"},
+        timeout=timeout,
+        retries=3,
+    )
+    return pd.DataFrame([_format_commune(commune, commune.get("nom", "")) for commune in payload])
+
+
 def recuperer_irl(timeout: int = 60) -> pd.DataFrame:
     """Recupere l'historique complet de l'IRL via l'API SDMX publique de l'INSEE
     (serie BDM 001515333, mise a jour trimestrielle).

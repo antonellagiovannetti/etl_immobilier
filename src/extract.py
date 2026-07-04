@@ -50,6 +50,7 @@ RAW_TRANSACTIONS_PATH = Path("data/raw/transactions.npz")
 TRANSACTIONS_COLUMNS = [
     "id_transaction",
     "id_ville",
+    "departement",
     "date_transaction",
     "prix",
     "type_batiment",
@@ -138,12 +139,11 @@ def extract_loyers_complement(year: int) -> pd.DataFrame:
     dataset_id = CARTE_LOYERS_DATASET_IDS[year]
     resources = _data_gouv_resources(dataset_id)
 
-    appartement_url = next(
-        r["url"] for r in resources if r["title"] == "Indicateurs de loyer appartement"
-    )
-    maison_url = next(
-        r["url"] for r in resources if r["title"] == "Indicateurs de loyer maison"
-    )
+    def _find_resource_url(pattern: str) -> str:
+        return next(r["url"] for r in resources if re.fullmatch(pattern, r["title"]))
+
+    appartement_url = _find_resource_url(r"Indicateurs? de loyer appartement")
+    maison_url = _find_resource_url(r"Indicateurs? de loyer maison")
 
     def _read(url: str, value_col: str) -> pd.DataFrame:
         df = pd.read_csv(
@@ -196,6 +196,20 @@ def extract_ircom() -> pd.DataFrame:
             )
     df = df.drop(columns=["col_a"])
     df["id_ville"] = df["id_ville"].astype(str).str.zfill(3)
+    # Le champ "Dep." IRCOM scinde parfois les gros departements en
+    # plusieurs sous-codes (13 -> 131/132, 75 -> 754..758) : les 2 premiers
+    # caracteres (3 pour les DOM 97x/98x) redonnent le vrai code departement.
+    df["departement"] = df["departement"].astype(str).str.upper().apply(
+        lambda dep: dep[:3] if dep[:2] in ("97", "98") else dep[:2]
+    )
+    numeric_columns = [
+        "n_foyers_fiscaux", "revenu_fiscal_reference", "impot_net",
+        "n_foyers_imposes", "revenu_fiscal_reference_imposes",
+        "n_foyers_salaires", "montant_salaires",
+        "n_foyers_retraites", "montant_retraites",
+    ]
+    for column in numeric_columns:
+        df[column] = pd.to_numeric(df[column], errors="coerce")
     return df
 
 

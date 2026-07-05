@@ -85,30 +85,9 @@ def load_densite_par_departement():
     return pd.read_sql(query, engine)
 
 
-@st.cache_data(ttl=300)
-def load_transactions_vs_taux_interet():
-    query_transactions = """
-        SELECT extract(year FROM date_transaction)::int AS annee,
-               extract(month FROM date_transaction)::int AS mois,
-               count(*) AS nb_transactions,
-               avg(prix) AS montant_moyen
-        FROM operationnel.transactions
-        GROUP BY 1, 2;
-    """
-    query_macro = """
-        SELECT annee, mois, taux_interet
-        FROM operationnel.indicateurs_macro
-        WHERE taux_interet IS NOT NULL AND mois IS NOT NULL;
-    """
-    transactions_mensuelles = pd.read_sql(query_transactions, engine)
-    taux_interet = pd.read_sql(query_macro, engine)
-    return transactions_mensuelles.merge(taux_interet, on=["annee", "mois"], how="inner")
-
-
 try:
     df = load_dashboard_data()
     densite_dept = load_densite_par_departement()
-    transactions_taux = load_transactions_vs_taux_interet()
 except Exception as e:
     st.error("Impossible de charger les données du dashboard depuis PostgreSQL.")
     st.caption(str(e))
@@ -138,8 +117,55 @@ selected_dept = st.sidebar.multiselect(
 # Application du filtre si sélectionné
 df_filtered = df[df["departement"].isin(selected_dept)] if selected_dept else df
 
+# Fonction reutilisable : carte par commune coloree selon une colonne du KPI
+def render_commune_map(data: pd.DataFrame, value_col: str, colors: list[str], legend: str, map_key: str):
+    map_data = data.dropna(subset=["latitude", "longitude", value_col])
+    map_size = st.slider(
+        "Nombre de communes affichées (les mieux classées)",
+        min_value=10,
+        max_value=min(2000, len(map_data)) if len(map_data) > 10 else 10,
+        value=min(200, len(map_data)) if len(map_data) > 0 else 10,
+        step=10,
+        key=f"slider_{map_key}",
+    )
+    map_data = map_data.head(map_size)
+
+    if map_data.empty:
+        st.info("Aucune commune géolocalisée à afficher pour ce filtre.")
+        return
+
+    colormap = folium.LinearColormap(
+        colors=colors,
+        vmin=data[value_col].min(),
+        vmax=data[value_col].max(),
+        caption=legend,
+    )
+    france_map = folium.Map(location=[46.6, 2.6], zoom_start=6, tiles="cartodbpositron")
+    for _, row in map_data.iterrows():
+        folium.CircleMarker(
+            location=[row["latitude"], row["longitude"]],
+            radius=5,
+            color=colormap(row[value_col]),
+            fill=True,
+            fill_color=colormap(row[value_col]),
+            fill_opacity=0.85,
+            popup=(
+                f"<b>{row['ville']}</b> ({row['departement']})<br>"
+                f"{legend} : {row[value_col]:.2f}<br>"
+                f"Score : {row['score_attractivite']:.1f}/100"
+            ),
+        ).add_to(france_map)
+    colormap.add_to(france_map)
+    st_folium(france_map, use_container_width=True, height=520, returned_objects=[], key=f"map_{map_key}")
+
+
 # Section 0 : indicateurs cles (moyennes sur le filtre courant)
 st.subheader("Vue d'ensemble")
+st.caption(
+    "Score d'attractivité = 35% rendement brut + 25% ratio d'effort fiscal (inversé) "
+    "+ 20% revenu fiscal moyen + 20% taux de vacance (inversé), chaque composante "
+    "normalisée de 0 à 100 au niveau national."
+)
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 kpi1.metric("Communes évaluées", f"{len(df_filtered):,}")
 kpi2.metric("Score moyen", f"{df_filtered['score_attractivite'].mean():.1f}/100")
@@ -150,6 +176,7 @@ st.markdown("---")
 
 # Section 1 : Le Top 10 National / Filtré
 st.subheader("🏆 Top 10 des Communes les plus attractives")
+st.caption("Classement par score_attractivite décroissant, parmi les communes ayant ≥ 5 transactions sur 2022-2024.")
 top_10 = df_filtered.head(10)
 
 # Affichage d'un tableau propre et dynamique
@@ -176,70 +203,47 @@ st.markdown("---")
 
 # Section 2 : Carte interactive (Folium) — colormap du score d'attractivite
 st.subheader("🗺️ Carte du score d'attractivité")
-map_data = df_filtered.dropna(subset=["latitude", "longitude"])
-map_size = st.slider(
-    "Nombre de communes affichées sur la carte (les mieux classées)",
-    min_value=10, max_value=min(2000, len(map_data)) if len(map_data) > 10 else 10,
-    value=min(200, len(map_data)) if len(map_data) > 0 else 10,
-    step=10,
+st.caption("score_attractivite (0-100) — voir la formule dans la section *Vue d'ensemble* ci-dessus.")
+render_commune_map(
+    df_filtered, "score_attractivite",
+    colors=["#d73027", "#fee08b", "#1a9850"],
+    legend="Score d'attractivité (0-100)",
+    map_key="score",
 )
-map_data = map_data.head(map_size)
-
-if map_data.empty:
-    st.info("Aucune commune géolocalisée à afficher pour ce filtre.")
-else:
-    colormap = folium.LinearColormap(
-        colors=["#d73027", "#fee08b", "#1a9850"],
-        vmin=df_filtered["score_attractivite"].min(),
-        vmax=df_filtered["score_attractivite"].max(),
-        caption="Score d'attractivité (0-100)",
-    )
-    france_map = folium.Map(location=[46.6, 2.6], zoom_start=6, tiles="cartodbpositron")
-    for _, row in map_data.iterrows():
-        folium.CircleMarker(
-            location=[row["latitude"], row["longitude"]],
-            radius=5,
-            color=colormap(row["score_attractivite"]),
-            fill=True,
-            fill_color=colormap(row["score_attractivite"]),
-            fill_opacity=0.85,
-            popup=(
-                f"<b>{row['ville']}</b> ({row['departement']})<br>"
-                f"Score : {row['score_attractivite']:.1f}/100<br>"
-                f"Rendement brut : {row['rendement_brut']:.2f} %<br>"
-                f"Prix médian : {row['prix_m2_median']:.0f} €/m²"
-            ),
-        ).add_to(france_map)
-    colormap.add_to(france_map)
-    st_folium(france_map, use_container_width=True, height=520, returned_objects=[])
 
 st.markdown("---")
 
-# Section 3 : Graphiques Métier (Effort fiscal et Vacance)
-st.subheader("Analyses des indicateurs clés (Top 10)")
+# Section 3 : Carte du ratio d'effort fiscal (indicateur de risque locataire)
+st.subheader("🗺️ Carte du ratio d'effort fiscal")
+st.caption(
+    "ratio_effort_fiscal = (loyer_m2_moyen × 12 × 50) / revenu_fiscal_moyen — "
+    "indicateur de risque locataire : plus il est élevé, plus le loyer pèse lourd "
+    "dans le revenu des habitants de la commune (plus bas = mieux)."
+)
+render_commune_map(
+    df_filtered, "ratio_effort_fiscal",
+    colors=["#1a9850", "#fee08b", "#d73027"],
+    legend="Ratio d'effort fiscal",
+    map_key="effort",
+)
 
-col1, col2 = st.columns(2)
+st.markdown("---")
 
-with col1:
-    st.markdown("**Ratio d'effort fiscal (Top 10)**")
-    # Le rendement brut est deja visible dans le tableau du Top 10 ci-dessus ;
-    # le ratio d'effort fiscal (loyer / revenu fiscal) apporte une info neuve.
-    st.bar_chart(top_10.set_index("ville")["ratio_effort_fiscal"])
-
-with col2:
-    st.markdown("**Occupé vs vacant — commune sélectionnée**")
-    selected_ville = st.selectbox("Commune du Top 10", top_10["ville"])
-    taux_vacance_selection = top_10.loc[top_10["ville"] == selected_ville, "taux_vacance"].iloc[0]
-    fig, ax = plt.subplots()
-    ax.pie(
-        [100 - taux_vacance_selection, taux_vacance_selection],
-        labels=["Occupé", "Vacant"],
-        autopct="%.1f%%",
-        colors=["#1a9850", "#d73027"],
-        startangle=90,
-    )
-    ax.axis("equal")
-    st.pyplot(fig)
+# Section 4 : Occupé vs vacant, pour une commune du Top 10
+st.subheader("Occupé vs vacant — commune sélectionnée")
+st.caption("taux_vacance = logements vacants / logements totaux × 100, sur l'année de référence du score.")
+selected_ville = st.selectbox("Commune du Top 10", top_10["ville"])
+taux_vacance_selection = top_10.loc[top_10["ville"] == selected_ville, "taux_vacance"].iloc[0]
+fig, ax = plt.subplots()
+ax.pie(
+    [100 - taux_vacance_selection, taux_vacance_selection],
+    labels=["Occupé", "Vacant"],
+    autopct="%.1f%%",
+    colors=["#1a9850", "#d73027"],
+    startangle=90,
+)
+ax.axis("equal")
+st.pyplot(fig)
 
 st.markdown("---")
 
@@ -283,28 +287,7 @@ with col4:
     st_folium(carte_densite, use_container_width=True, height=450, returned_objects=[])
 
 st.caption(
+    "Moyenne par département des valeurs communales du filtre courant. "
     "Cartes limitées à la France métropolitaine (contours des départements d'outre-mer "
     "non disponibles dans le fond de carte utilisé)."
 )
-
-st.markdown("---")
-
-# Section 5 : Annexe — taux d'interet vs volume de transactions (hors score d'attractivite)
-st.subheader("📎 Annexe — Marché du crédit vs volume de transactions")
-st.caption(
-    "Hors périmètre du score d'attractivité, mais utile en contexte : le nombre de "
-    "transactions mensuelles suit-il le taux d'intérêt moyen des crédits immobiliers ?"
-)
-
-fig2, ax2 = plt.subplots()
-scatter = ax2.scatter(
-    transactions_taux["taux_interet"],
-    transactions_taux["nb_transactions"],
-    c=transactions_taux["annee"],
-    cmap="viridis",
-    alpha=0.75,
-)
-ax2.set_xlabel("Taux d'intérêt moyen des crédits (%)")
-ax2.set_ylabel("Nombre de transactions (par mois)")
-fig2.colorbar(scatter, ax=ax2, label="Année")
-st.pyplot(fig2)

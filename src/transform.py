@@ -14,6 +14,8 @@ import pandas as pd
 try:
     from .extract import (
         RAW_TRANSACTIONS_PATH,
+        TRANSACTIONS_COLUMNS,
+        extract_dvf,
         extract_ircom,
         extract_loyers_complement,
         extract_lovac,
@@ -24,6 +26,8 @@ try:
 except ImportError:
     from extract import (
         RAW_TRANSACTIONS_PATH,
+        TRANSACTIONS_COLUMNS,
+        extract_dvf,
         extract_ircom,
         extract_loyers_complement,
         extract_lovac,
@@ -121,6 +125,41 @@ def transform_transactions(df: pd.DataFrame) -> pd.DataFrame:
     df["date_transaction"] = df["date_transaction"].values.astype("datetime64[D]")
 
     return df.reset_index(drop=True)
+
+
+def transform_dvf_supplement(dvf_df: pd.DataFrame, id_transaction_offset: int) -> pd.DataFrame:
+    """
+    Convertit un DataFrame geo-dvf brut (cf. extract_dvf) vers le meme format
+    brut que extract_transactions_npz (TRANSACTIONS_COLUMNS), pour pouvoir le
+    concatener AVANT transform_transactions et reutiliser telle quelle toute
+    sa logique (globalisation id_ville, calcul prix_m2, filtre qualite
+    2022-2024, dedoublonnage).
+
+    id_transaction_offset doit depasser le plus grand id_transaction deja
+    utilise par les donnees historiques (id_mutation geo-dvf est
+    alphanumerique, ex. "2025-1", incompatible avec la colonne INTEGER de
+    schema.sql) : on genere ici des identifiants entiers synthetiques.
+    """
+    df = dvf_df[
+        dvf_df["nature_mutation"].isin(["Vente", "Vente en l'état futur d'achèvement"])
+        & dvf_df["type_local"].isin(["Maison", "Appartement"])
+    ].copy()
+
+    deps_communes = df["code_commune"].map(split_insee_code)
+    df["departement"] = [dep for dep, _ in deps_communes]
+    df["id_ville"] = [commune for _, commune in deps_communes]
+
+    df["date_transaction"] = df["date_mutation"]
+    df["prix"] = df["valeur_fonciere"]
+    df["surface_habitable"] = df["surface_reelle_bati"]
+    df["type_batiment"] = df["type_local"]
+    df["n_pieces"] = df["nombre_pieces_principales"]
+    df["vefa"] = df["nature_mutation"] == "Vente en l'état futur d'achèvement"
+
+    df = df.reset_index(drop=True)
+    df["id_transaction"] = id_transaction_offset + df.index
+
+    return df[TRANSACTIONS_COLUMNS]
 
 
 def dataframe_to_npz_arrays(df: pd.DataFrame) -> dict[str, np.ndarray]:
@@ -456,7 +495,14 @@ def run_full_pipeline(output_dir: str | Path = DEFAULT_FINAL_DIR) -> dict[str, d
     _write(build_demographics(communes_api), "demographics")
     valid_ids = set(communes["id_ville"])
 
-    transactions = transform_transactions(extract_transactions_npz())
+    raw_transactions = extract_transactions_npz()
+    dvf_2025 = extract_dvf(2025)
+    dvf_supplement = transform_dvf_supplement(
+        dvf_2025, id_transaction_offset=int(raw_transactions["id_transaction"].max()) + 1
+    )
+    transactions = transform_transactions(
+        pd.concat([raw_transactions, dvf_supplement], ignore_index=True)
+    )
     transactions = _write_filtered(transactions, "transactions", valid_ids)
     save_transactions_npz(transactions)  # conserve le format .npz historique
 

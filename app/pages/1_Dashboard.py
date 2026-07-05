@@ -202,7 +202,11 @@ st.markdown("---")
 
 # Section 1 : Le Top 10 National / Filtré
 st.subheader("🏆 Top 10 des Communes les plus attractives")
-st.caption("Classement par score_attractivite décroissant, parmi les communes ayant ≥ 5 transactions sur 2022-2024.")
+st.caption(
+    "Classement par score_attractivite décroissant, parmi les communes ayant ≥ 5 "
+    "transactions sur la dernière année disponible (marché actuel, pas une moyenne "
+    "pluriannuelle)."
+)
 top_10 = df_filtered.head(10)
 
 # Affichage d'un tableau propre et dynamique

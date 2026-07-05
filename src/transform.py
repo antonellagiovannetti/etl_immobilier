@@ -401,9 +401,18 @@ def compute_kpi(
     Calcule les 4 KPI (rendement brut, taux de vacance, ratio d'effort
     fiscal, prix m2 median) et le score d'attractivite (0-100) par commune,
     conformement au mapping du cahier des charges (section 3 et 8).
-    Filtre qualite : communes avec >= 5 transactions sur 2022-2024.
+
+    Le prix m2 median, le nombre de transactions et le filtre qualite
+    (>= 5 transactions) portent sur la derniere annee disponible dans
+    transactions_df (2025 au moment d'ecrire ce code), pas sur une fenetre
+    glissante de plusieurs annees : le score doit refleter le marche actuel,
+    pas une moyenne datant potentiellement de 2 ou 3 ans. Une fenetre
+    multi-annees couvrirait plus de communes (les petites communes rurales
+    n'ont pas toujours 5 transactions/an), mais au prix d'une donnee moins
+    a jour - choix valide, mais ce n'est pas celui retenu ici.
     """
-    window = transactions_df[transactions_df["annee"].between(2022, 2024, inclusive="both")]
+    derniere_annee_transactions = int(transactions_df["annee"].max())
+    window = transactions_df[transactions_df["annee"] == derniere_annee_transactions]
     agg = (
         window.groupby("id_ville")
         .agg(prix_m2_median=("prix_m2", "median"), n_transactions=("id_transaction", "count"))

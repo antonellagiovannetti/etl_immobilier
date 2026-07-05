@@ -7,6 +7,27 @@ si elle a été complétée pour aller plus loin dans le temps.
 Toutes les sources listées ici sont des **données publiques et gratuites** (open data),
 publiées par des organismes officiels français.
 
+## Qui a récupéré quoi (justificatif)
+
+| Source | Méthode de récupération | Où le vérifier |
+|---|---|---|
+| Transactions DVF 2025 | **Automatique** — téléchargée par le code à chaque exécution, aucun fichier déposé à la main | `src/extract.py`, fonction `extract_dvf()` |
+| Carte des loyers 2024 / 2025 | **Automatique** — idem | `src/extract.py`, fonction `extract_loyers_complement()` |
+| IRCOM (revenus 2024) | **Automatique** — idem | `src/extract.py`, fonction `extract_ircom()` |
+| LOVAC (logements vacants) | **Automatique** — idem | `src/extract.py`, fonction `extract_lovac()` |
+| IRL (INSEE) | **Automatique** — appel direct à l'API INSEE | `src/API.py`, fonction `recuperer_irl()` |
+| Données géo/démographiques | **Automatique** — appel direct à l'API du gouvernement | `src/API.py`, fonction `recuperer_toutes_communes()` |
+| Taux d'intérêt des crédits (Banque de France) | **Manuel** — téléchargé et déposé par l'utilisateur du projet | `data/raw/additional_data/new_housing_loans_interest_rate.csv` |
+| Flux de nouveaux crédits (Banque de France) | **Manuel** — idem | `data/raw/additional_data/new_housing_loans_flow.csv` |
+| Taux d'endettement des ménages (Banque de France) | **Manuel** — idem | `data/raw/additional_data/household_debt_ratio.csv` |
+
+**Seuls les 3 fichiers Banque de France sont manuels** : ce sont les 3 seuls fichiers
+présents dans `data/raw/additional_data/`. Tout le reste (DVF 2025, Carte des loyers, IRCOM,
+LOVAC, IRL, données géographiques) n'existe sous forme de fichier nulle part dans le projet
+— c'est le code qui va chercher la donnée en direct sur internet à chaque exécution, via les
+URL/identifiants de jeux de données codés dans `src/extract.py` et `src/API.py` (le détail de
+chaque lien exact est donné section par section ci-dessous).
+
 ## Vue d'ensemble
 
 | Donnée | Utilisée pour | Période initiale | Complétée avec | Période finale |

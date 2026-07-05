@@ -1,5 +1,24 @@
+import sys
+from pathlib import Path
+
+import pandas as pd
 import streamlit as st
-import time
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+import API
+import extract
+import load as load_module
+import transform
+
+# Verrou Postgres (session-level) empechant deux executions concurrentes du
+# pipeline : si l'onglet est ferme/rafraichi en plein chargement puis relance,
+# ou si quelqu'un clique deux fois, le deuxieme essai est bloque au lieu de
+# lancer un insert en double par-dessus le premier. Le verrou est
+# automatiquement libere par Postgres si la connexion qui le detient meurt
+# (crash, tab fermee), donc pas de risque de blocage permanent.
+PIPELINE_LOCK_KEY = 918273
 
 # Configuration de la page
 st.set_page_config(page_title="Demo Pipeline ETL", layout="wide")
@@ -9,7 +28,6 @@ st.set_page_config(page_title="Demo Pipeline ETL", layout="wide")
 # ==========================================
 st.markdown("""
     <style>
-        /* Boîte translucide adaptative utilisant les variables globales Streamlit */
         .neon-box {
             background-color: rgba(128, 128, 128, 0.08);
             border: 1px solid rgba(128, 128, 128, 0.15);
@@ -17,28 +35,15 @@ st.markdown("""
             padding: 20px;
             backdrop-filter: blur(20px);
             -webkit-backdrop-filter: blur(20px);
-            min-height: 180px; /* Augmenté pour accueillir confortablement les logs internes */
+            min-height: 220px;
             transition: all 0.5s ease;
             display: flex;
             flex-direction: column;
-            justify-content:开;
         }
-        
-        /* Halos lumineux subtils et adaptatifs (ajustés selon l'intensité) */
-        .neon-extract {
-            box-shadow: 0 0 25px rgba(128, 128, 128, 0.15);
-        }
-        .neon-transform {
-            box-shadow: 0 0 30px rgba(10, 132, 255, 0.25);
-        }
-        .neon-kpi {
-            box-shadow: 0 0 30px rgba(255, 159, 10, 0.25);
-        }
-        .neon-load {
-            box-shadow: 0 0 30px rgba(48, 209, 88, 0.25);
-        }
-        
-        /* Typographies synchronisées avec les couleurs de police du thème actif */
+        .neon-extract { box-shadow: 0 0 25px rgba(128, 128, 128, 0.15); }
+        .neon-transform { box-shadow: 0 0 30px rgba(10, 132, 255, 0.25); }
+        .neon-kpi { box-shadow: 0 0 30px rgba(255, 159, 10, 0.25); }
+        .neon-load { box-shadow: 0 0 30px rgba(48, 209, 88, 0.25); }
         .neon-box strong {
             color: var(--text-color);
             font-size: 1.1rem;
@@ -55,7 +60,7 @@ st.markdown("""
         }
         .neon-arrow {
             text-align: center;
-            margin-top: 45px;
+            margin-top: 90px;
             font-weight: 300;
             color: var(--text-color);
             opacity: 0.3;
@@ -63,162 +68,192 @@ st.markdown("""
         .status-text {
             font-size: 0.85rem;
             font-weight: 600;
-            margin-top: auto; /* Aligne le statut vers le bas de la boîte */
+            margin-top: auto;
             padding-top: 8px;
             border-top: 1px solid rgba(128, 128, 128, 0.1);
         }
         .log-text {
-            font-size: 0.78rem;
+            font-size: 0.76rem;
             font-family: 'SF Mono', Monaco, Consolas, monospace;
             margin-top: 4px;
             color: var(--text-color);
-            opacity: 0.7;
-            line-height: 1.2;
+            opacity: 0.75;
+            line-height: 1.35;
+            white-space: pre-line;
         }
     </style>
 """, unsafe_allow_html=True)
 
 st.title("Pipeline ETL - Execution en temps reel")
-st.markdown("Lancez l'execution complete du pipeline pour observer le traitement des donnees.")
+st.markdown(
+    "Lance le vrai pipeline (extraction des 8 sources, transformation, calcul des KPI, "
+    "chargement en base) et observe chaque etape s'executer reellement."
+)
 
 # ==========================================
-# INITIALISATION DES ÉTATS (Session State)
+# CADRE D'AFFICHAGE DES 4 ETAPES
 # ==========================================
-if "status_extract" not in st.session_state:
-    st.session_state.status_extract = "⚪ En attente"
-if "status_transform" not in st.session_state:
-    st.session_state.status_transform = "⚪ En attente"
-if "status_kpi" not in st.session_state:
-    st.session_state.status_kpi = "⚪ En attente"
-if "status_load" not in st.session_state:
-    st.session_state.status_load = "⚪ En attente"
+columns = st.columns([3, 0.4, 3, 0.4, 3, 0.4, 3])
+placeholders = {}
+labels = [
+    ("extract", "1. EXTRACT", "8 sources brutes", "neon-extract"),
+    ("transform", "2. TRANSFORM", "Nettoyage & harmonisation", "neon-transform"),
+    ("kpi", "3. CALCUL KPI", "Normalisation & score", "neon-kpi"),
+    ("load", "4. LOAD", "PostgreSQL (Docker)", "neon-load"),
+]
 
-if "log_extract" not in st.session_state:
-    st.session_state.log_extract = "..."
-if "log_transform" not in st.session_state:
-    st.session_state.log_transform = "..."
-if "log_kpi" not in st.session_state:
-    st.session_state.log_kpi = "..."
-if "log_load" not in st.session_state:
-    st.session_state.log_load = "..."
 
-# ==========================================
-# INTERFACE GRAPHIQUE : BLOCS INTERACTIFS
-# ==========================================
-
-c1, arrow1, c2, arrow2, c3, arrow3, c4 = st.columns([3, 0.4, 3, 0.4, 3, 0.4, 3])
-
-with c1:
-    st.markdown(f"""
-        <div class='neon-box neon-extract'>
-            <strong>1. EXTRACT</strong>
-            <small>Fichiers sources (CSV, NPZ)</small>
-            <div class='log-text'>{st.session_state.log_extract}</div>
-            <div class='status-text'>Statut : {st.session_state.status_extract}</div>
+def render_box(key: str, title: str, subtitle: str, css_class: str, status: str, log: str) -> str:
+    return f"""
+        <div class='neon-box {css_class}'>
+            <strong>{title}</strong>
+            <small>{subtitle}</small>
+            <div class='log-text'>{log}</div>
+            <div class='status-text'>Statut : {status}</div>
         </div>
-    """, unsafe_allow_html=True)
+    """
 
-with arrow1:
-    st.markdown("<h3 class='neon-arrow'>→</h3>", unsafe_allow_html=True)
 
-with c2:
-    st.markdown(f"""
-        <div class='neon-box neon-transform'>
-            <strong>2. TRANSFORM</strong>
-            <small>Nettoyage & Harmonisation</small>
-            <div class='log-text'>{st.session_state.log_transform}</div>
-            <div class='status-text'>Statut : {st.session_state.status_transform}</div>
-        </div>
-    """, unsafe_allow_html=True)
+col_index = 0
+for key, title, subtitle, css_class in labels:
+    with columns[col_index]:
+        placeholders[key] = st.empty()
+        placeholders[key].markdown(
+            render_box(key, title, subtitle, css_class, "⚪ En attente", "..."), unsafe_allow_html=True
+        )
+    col_index += 1
+    if col_index < len(columns):
+        with columns[col_index]:
+            st.markdown("<h3 class='neon-arrow'>→</h3>", unsafe_allow_html=True)
+        col_index += 1
 
-with arrow2:
-    st.markdown("<h3 class='neon-arrow'>→</h3>", unsafe_allow_html=True)
 
-with c3:
-    st.markdown(f"""
-        <div class='neon-box neon-kpi'>
-            <strong>3. CALCUL KPI</strong>
-            <small>Normalisation & Scores</small>
-            <div class='log-text'>{st.session_state.log_kpi}</div>
-            <div class='status-text'>Statut : {st.session_state.status_kpi}</div>
-        </div>
-    """, unsafe_allow_html=True)
+def update(key: str, title: str, subtitle: str, css_class: str, status: str, log: str) -> None:
+    placeholders[key].markdown(render_box(key, title, subtitle, css_class, status, log), unsafe_allow_html=True)
 
-with arrow3:
-    st.markdown("<h3 class='neon-arrow'>→</h3>", unsafe_allow_html=True)
-
-with c4:
-    st.markdown(f"""
-        <div class='neon-box neon-load'>
-            <strong>4. LOAD</strong>
-            <small>PostgreSQL (Docker)</small>
-            <div class='log-text'>{st.session_state.log_load}</div>
-            <div class='status-text'>Statut : {st.session_state.status_load}</div>
-        </div>
-    """, unsafe_allow_html=True)
 
 st.markdown("---")
 
 # ==========================================
-# GESTION DES BOUTONS ET DU PIPELINE SÉQUENTIEL
+# EXECUTION REELLE DU PIPELINE
 # ==========================================
 
-if st.button("Lancer le pipeline complet", type="primary"):
-    
+def run_pipeline() -> None:
     # ---- 1. EXTRACT ----
-    st.session_state.status_extract = "🔵 En cours..."
-    st.session_state.log_extract = "Lecture de transactions.npz (9,1M lignes)..."
-    st.rerun() if time.sleep(0.8) else None
-    
-    st.session_state.log_extract = "Extraction de loyers.csv et foyers_fiscaux.csv..."
-    st.rerun() if time.sleep(0.8) else None
-    
-    st.session_state.status_extract = "🟢 Termine"
-    st.session_state.log_extract = "8 fichiers extraits vers /raw"
-    
+    update("extract", "1. EXTRACT", "8 sources brutes", "neon-extract", "🔵 En cours...", "Lecture de transactions.npz...")
+    df_transactions_raw = extract.extract_transactions_npz()
+    log_extract = f"transactions.npz : {len(df_transactions_raw):,} lignes brutes\n"
+    update("extract", "1. EXTRACT", "8 sources brutes", "neon-extract", "🔵 En cours...", log_extract + "Telechargement DVF (geo-dvf, 2025)...")
+
+    df_dvf_2025 = extract.extract_dvf(2025)
+    log_extract += f"DVF 2025 (data.gouv.fr) : {len(df_dvf_2025):,} lignes\n"
+    update("extract", "1. EXTRACT", "8 sources brutes", "neon-extract", "🔵 En cours...", log_extract + "Carte des loyers 2024/2025...")
+
+    loyers_2024 = extract.extract_loyers_complement(2024)
+    loyers_2025 = extract.extract_loyers_complement(2025)
+    log_extract += f"Carte des loyers : {len(loyers_2024) + len(loyers_2025):,} lignes (2024+2025)\n"
+    update("extract", "1. EXTRACT", "8 sources brutes", "neon-extract", "🔵 En cours...", log_extract + "IRCOM (revenus des menages, DGFiP)...")
+
+    ircom_df = extract.extract_ircom()
+    log_extract += f"IRCOM : {len(ircom_df):,} lignes\n"
+    update("extract", "1. EXTRACT", "8 sources brutes", "neon-extract", "🔵 En cours...", log_extract + "LOVAC (logements vacants, Cerema)...")
+
+    lovac_df = extract.extract_lovac()
+    log_extract += f"LOVAC : {len(lovac_df):,} communes\n"
+    update("extract", "1. EXTRACT", "8 sources brutes", "neon-extract", "🔵 En cours...", log_extract + "Referentiel communes (geo.api.gouv.fr)...")
+
+    communes_api = API.recuperer_toutes_communes()
+    log_extract += f"Communes (API) : {len(communes_api):,} communes\n"
+    update("extract", "1. EXTRACT", "8 sources brutes", "neon-extract", "🔵 En cours...", log_extract + "IRL (API SDMX INSEE)...")
+
+    irl_df = API.recuperer_irl()
+
+    ti_df = extract.extract_webstat_series(PROJECT_ROOT / "data/raw/additional_data/new_housing_loans_interest_rate.csv")
+    flux_df = extract.extract_webstat_series(PROJECT_ROOT / "data/raw/additional_data/new_housing_loans_flow.csv")
+    debt_df = extract.extract_webstat_series(PROJECT_ROOT / "data/raw/additional_data/household_debt_ratio.csv")
+    log_extract += f"IRL + 3 series Banque de France : {len(irl_df)} trimestres, {len(ti_df) + len(flux_df) + len(debt_df)} observations"
+
+    update("extract", "1. EXTRACT", "8 sources brutes", "neon-extract", "🟢 Termine", log_extract)
+
     # ---- 2. TRANSFORM ----
-    st.session_state.status_transform = "🔵 En cours..."
-    st.session_state.log_transform = "Filtre qualite (communes >= 5 transactions)..."
-    st.rerun() if time.sleep(1.0) else None
-    
-    st.session_state.log_transform = "Nettoyage des prix aberrants..."
-    st.rerun() if time.sleep(0.8) else None
-    
-    st.session_state.status_transform = "🟢 Termine"
-    st.session_state.log_transform = "Donnees nettes et coherentes"
-    
+    update("transform", "2. TRANSFORM", "Nettoyage & harmonisation", "neon-transform", "🔵 En cours...", "Filtre qualite transactions (>= 5 sur 2022-2024)...")
+    transactions = transform.transform_transactions(df_transactions_raw)
+    log_transform = f"transactions : {len(transactions):,} lignes retenues\n"
+
+    update("transform", "2. TRANSFORM", "Nettoyage & harmonisation", "neon-transform", "🔵 En cours...", log_transform + "Harmonisation loyers/foyers/parc...")
+    loyers = transform.transform_loyers(pd.read_csv(PROJECT_ROOT / "data/raw/loyers.csv"), [loyers_2024, loyers_2025])
+    foyers = transform.transform_foyers_fiscaux(pd.read_csv(PROJECT_ROOT / "data/raw/foyers_fiscaux.csv"), ircom_df)
+    parc = transform.transform_parc_immobilier(pd.read_csv(PROJECT_ROOT / "data/raw/parc_immobilier.csv"), lovac_df)
+    log_transform += f"loyers : {len(loyers):,} | foyers_fiscaux : {len(foyers):,} | parc_immobilier : {len(parc):,}\n"
+
+    update("transform", "2. TRANSFORM", "Nettoyage & harmonisation", "neon-transform", "🔵 En cours...", log_transform + "Consolidation indicateurs macro + referentiel communes...")
+    macro = transform.transform_indicateurs_macro(ti_df, flux_df, debt_df, irl_df)
+    communes = transform.build_communes(communes_api)
+    demographics = transform.build_demographics(communes_api)
+    log_transform += f"indicateurs_macro : {len(macro):,} mois | communes : {len(communes):,}"
+
+    update("transform", "2. TRANSFORM", "Nettoyage & harmonisation", "neon-transform", "🟢 Termine", log_transform)
+
     # ---- 3. CALCUL KPI ----
-    st.session_state.status_kpi = "🔵 En cours..."
-    st.session_state.log_kpi = "Calcul des 4 KPI bruts métier..."
-    st.rerun() if time.sleep(1.0) else None
-    
-    st.session_state.log_kpi = "Normalisation nationale via normalize_kpi()..."
-    st.rerun() if time.sleep(0.8) else None
-    
-    st.session_state.status_kpi = "🟢 Termine"
-    st.session_state.log_kpi = "Table score_attractivite generee"
-    
+    update("kpi", "3. CALCUL KPI", "Normalisation & score", "neon-kpi", "🔵 En cours...", "Calcul rendement brut, taux de vacance, effort fiscal, prix m2 median...")
+    score = transform.compute_kpi(transactions, loyers, foyers, parc)
+    top = score.dropna(subset=["score_attractivite"]).sort_values("score_attractivite", ascending=False).iloc[0]
+    log_kpi = (
+        f"score_attractivite : {len(score):,} communes evaluees\n"
+        f"annee de reference : {score['annee_ref'].iloc[0]}\n"
+        f"meilleur score : id_ville {int(top['id_ville'])} ({top['score_attractivite']:.1f}/100)"
+    )
+    update("kpi", "3. CALCUL KPI", "Normalisation & score", "neon-kpi", "🟢 Termine", log_kpi)
+
     # ---- 4. LOAD ----
-    st.session_state.status_load = "🔵 En cours..."
-    st.session_state.log_load = "Connexion PostgreSQL (Port 5432)..."
-    st.rerun() if time.sleep(0.8) else None
-    
-    st.session_state.log_load = "Insertion en mode Batch (7 tables)..."
-    st.rerun() if time.sleep(1.0) else None
-    
-    st.session_state.status_load = "🟢 Termine"
-    st.session_state.log_load = "Base de donnees synchronisee"
-    st.rerun()
-    
-    # ---- FIN DE TRAITEMENT & AUTO-RESET (5 SECONDES) ----
-    time.sleep(5.0)
-    
-    st.session_state.status_extract = "⚪ En attente"
-    st.session_state.status_transform = "⚪ En attente"
-    st.session_state.status_kpi = "⚪ En attente"
-    st.session_state.status_load = "⚪ En attente"
-    st.session_state.log_extract = "..."
-    st.session_state.log_transform = "..."
-    st.session_state.log_kpi = "..."
-    st.session_state.log_load = "..."
-    st.rerun()
+    update("load", "4. LOAD", "PostgreSQL (Docker)", "neon-load", "🔵 En cours...", "Ecriture des CSV dans data/final/...")
+    valid_ids = set(communes["id_ville"])
+    outputs = {
+        "communes": communes,
+        "demographics": demographics,
+        "transactions": transactions[transactions["id_ville"].isin(valid_ids)],
+        "loyers": loyers[loyers["id_ville"].isin(valid_ids)],
+        "foyers_fiscaux": foyers[foyers["id_ville"].isin(valid_ids)],
+        "parc_immobilier": parc[parc["id_ville"].isin(valid_ids)],
+        "indicateurs_macro": macro,
+        "score_attractivite": score[score["id_ville"].isin(valid_ids)],
+    }
+    load_module.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    for table_name, df in outputs.items():
+        df.to_csv(load_module.DATA_DIR / f"{table_name}.csv", index=False)
+
+    log_load = "Connexion PostgreSQL...\n"
+    update("load", "4. LOAD", "PostgreSQL (Docker)", "neon-load", "🔵 En cours...", log_load)
+
+    with load_module.engine.begin() as conn:
+        for table_name in load_module.TABLES:
+            conn.execute(load_module.text(f"TRUNCATE operationnel.{table_name} CASCADE"))
+
+    for table_name in load_module.TABLES:
+        load_module.load_table(table_name)
+        log_load += f"{table_name} : {len(outputs[table_name]):,} lignes inserees\n"
+        update("load", "4. LOAD", "PostgreSQL (Docker)", "neon-load", "🔵 En cours...", log_load)
+
+    update("load", "4. LOAD", "PostgreSQL (Docker)", "neon-load", "🟢 Termine", log_load + "Base synchronisee.")
+
+
+if st.button("Lancer le pipeline complet", type="primary"):
+    lock_conn = load_module.engine.connect()
+    acquired = lock_conn.execute(
+        load_module.text("SELECT pg_try_advisory_lock(:key)"), {"key": PIPELINE_LOCK_KEY}
+    ).scalar()
+
+    if not acquired:
+        st.error(
+            "Un chargement est deja en cours (verrou actif en base) - "
+            "attends qu'il se termine avant d'en relancer un, sinon les donnees "
+            "seraient inserees en double."
+        )
+        lock_conn.close()
+    else:
+        try:
+            run_pipeline()
+            st.success("Pipeline complet execute avec succes.")
+        finally:
+            lock_conn.execute(load_module.text("SELECT pg_advisory_unlock(:key)"), {"key": PIPELINE_LOCK_KEY})
+            lock_conn.close()

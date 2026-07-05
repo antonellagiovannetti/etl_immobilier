@@ -219,3 +219,6 @@ __marimo__/
 
 # data
 /data/
+
+# Claude Code local tooling (dev server config, not project-related)
+.claude/

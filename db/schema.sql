@@ -3,19 +3,40 @@
 -- Master Data & IA M1 — Ynov 2025-2026
 -- ============================================================
 
+-- ── Schéma opérationnel ────────────────────────────────────
+CREATE SCHEMA IF NOT EXISTS operationnel;
+SET search_path TO operationnel;
+
 -- ── Table centrale : référentiel géographique ──────────────
-CREATE TABLE IF NOT EXISTS communes (
+CREATE TABLE IF NOT EXISTS operationnel.communes (
     id_ville        INTEGER PRIMARY KEY,
-    departement     CHAR(2)         NOT NULL,
+    departement     CHAR(3)         NOT NULL,
     ville           VARCHAR(100)    NOT NULL,
     latitude        FLOAT,
-    longitude       FLOAT
+    longitude       FLOAT,
+    code_insee      CHAR(5),
+    code_region     VARCHAR(3)
 );
 
+-- ── Données démographiques (geo.api.gouv.fr) ───────────────
+CREATE TABLE IF NOT EXISTS operationnel.demographics (
+    id              SERIAL PRIMARY KEY,
+    id_ville        INTEGER         NOT NULL REFERENCES operationnel.communes(id_ville),
+    code_insee      CHAR(5),
+    code_region     VARCHAR(3),
+    nom_region      VARCHAR(100),
+    population      INTEGER,
+    superficie_km2  FLOAT,
+    densite         FLOAT,
+    UNIQUE (id_ville)
+);
+
+CREATE INDEX IF NOT EXISTS idx_demographics_id_ville ON operationnel.demographics(id_ville);
+
 -- ── Transactions immobilières (DVF) ────────────────────────
-CREATE TABLE IF NOT EXISTS transactions (
+CREATE TABLE IF NOT EXISTS operationnel.transactions (
     id_transaction      INTEGER PRIMARY KEY,
-    id_ville            INTEGER         NOT NULL REFERENCES communes(id_ville),
+    id_ville            INTEGER         NOT NULL REFERENCES operationnel.communes(id_ville),
     date_transaction    DATE            NOT NULL,
     annee               INTEGER         NOT NULL,
     prix                FLOAT           NOT NULL,
@@ -26,13 +47,13 @@ CREATE TABLE IF NOT EXISTS transactions (
     vefa                BOOLEAN         DEFAULT FALSE
 );
 
-CREATE INDEX IF NOT EXISTS idx_transactions_id_ville ON transactions(id_ville);
-CREATE INDEX IF NOT EXISTS idx_transactions_annee    ON transactions(annee);
+CREATE INDEX IF NOT EXISTS idx_transactions_id_ville ON operationnel.transactions(id_ville);
+CREATE INDEX IF NOT EXISTS idx_transactions_annee    ON operationnel.transactions(annee);
 
 -- ── Loyers médians par commune et année ────────────────────
-CREATE TABLE IF NOT EXISTS loyers (
+CREATE TABLE IF NOT EXISTS operationnel.loyers (
     id              SERIAL PRIMARY KEY,
-    id_ville        INTEGER     NOT NULL REFERENCES communes(id_ville),
+    id_ville        INTEGER     NOT NULL REFERENCES operationnel.communes(id_ville),
     annee           INTEGER     NOT NULL,
     loyer_m2_appartement    FLOAT,
     loyer_m2_maison         FLOAT,
@@ -40,12 +61,12 @@ CREATE TABLE IF NOT EXISTS loyers (
     UNIQUE (id_ville, annee)
 );
 
-CREATE INDEX IF NOT EXISTS idx_loyers_id_ville ON loyers(id_ville);
+CREATE INDEX IF NOT EXISTS idx_loyers_id_ville ON operationnel.loyers(id_ville);
 
 -- ── Foyers fiscaux par commune et année ────────────────────
-CREATE TABLE IF NOT EXISTS foyers_fiscaux (
+CREATE TABLE IF NOT EXISTS operationnel.foyers_fiscaux (
     id                      SERIAL PRIMARY KEY,
-    id_ville                INTEGER     NOT NULL REFERENCES communes(id_ville),
+    id_ville                INTEGER     NOT NULL REFERENCES operationnel.communes(id_ville),
     annee                   INTEGER     NOT NULL,
     revenu_fiscal_moyen     FLOAT,
     montant_impot_moyen     FLOAT,
@@ -53,12 +74,12 @@ CREATE TABLE IF NOT EXISTS foyers_fiscaux (
     UNIQUE (id_ville, annee)
 );
 
-CREATE INDEX IF NOT EXISTS idx_foyers_fiscaux_id_ville ON foyers_fiscaux(id_ville);
+CREATE INDEX IF NOT EXISTS idx_foyers_fiscaux_id_ville ON operationnel.foyers_fiscaux(id_ville);
 
 -- ── Parc immobilier par commune et année ───────────────────
-CREATE TABLE IF NOT EXISTS parc_immobilier (
+CREATE TABLE IF NOT EXISTS operationnel.parc_immobilier (
     id                      SERIAL PRIMARY KEY,
-    id_ville                INTEGER     NOT NULL REFERENCES communes(id_ville),
+    id_ville                INTEGER     NOT NULL REFERENCES operationnel.communes(id_ville),
     annee                   INTEGER     NOT NULL,
     n_logements             FLOAT,
     n_logements_vacants     FLOAT,
@@ -66,10 +87,10 @@ CREATE TABLE IF NOT EXISTS parc_immobilier (
     UNIQUE (id_ville, annee)
 );
 
-CREATE INDEX IF NOT EXISTS idx_parc_immobilier_id_ville ON parc_immobilier(id_ville);
+CREATE INDEX IF NOT EXISTS idx_parc_immobilier_id_ville ON operationnel.parc_immobilier(id_ville);
 
 -- ── Indicateurs macro nationaux (mensuel) ──────────────────
-CREATE TABLE IF NOT EXISTS indicateurs_macro (
+CREATE TABLE IF NOT EXISTS operationnel.indicateurs_macro (
     id                  SERIAL PRIMARY KEY,
     annee               INTEGER     NOT NULL,
     mois                INTEGER,
@@ -81,9 +102,9 @@ CREATE TABLE IF NOT EXISTS indicateurs_macro (
 );
 
 -- ── Score d'attractivité par commune (table finale) ────────
-CREATE TABLE IF NOT EXISTS score_attractivite (
+CREATE TABLE IF NOT EXISTS operationnel.score_attractivite (
     id                      SERIAL PRIMARY KEY,
-    id_ville                INTEGER     NOT NULL REFERENCES communes(id_ville),
+    id_ville                INTEGER     NOT NULL REFERENCES operationnel.communes(id_ville),
     annee_ref               INTEGER     NOT NULL,
     prix_m2_median          FLOAT,
     loyer_m2_moyen          FLOAT,
@@ -100,5 +121,5 @@ CREATE TABLE IF NOT EXISTS score_attractivite (
     UNIQUE (id_ville, annee_ref)
 );
 
-CREATE INDEX IF NOT EXISTS idx_score_id_ville           ON score_attractivite(id_ville);
-CREATE INDEX IF NOT EXISTS idx_score_attractivite       ON score_attractivite(score_attractivite DESC);
+CREATE INDEX IF NOT EXISTS idx_score_id_ville       ON operationnel.score_attractivite(id_ville);
+CREATE INDEX IF NOT EXISTS idx_score_attractivite   ON operationnel.score_attractivite(score_attractivite DESC);

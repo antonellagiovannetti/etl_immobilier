@@ -9,24 +9,34 @@ publiées par des organismes officiels français.
 
 ## Qui a récupéré quoi (justificatif)
 
-| Source | Méthode de récupération | Où le vérifier |
-|---|---|---|
-| Transactions DVF 2025 | **Automatique** — téléchargée par le code à chaque exécution, aucun fichier déposé à la main | `src/extract.py`, fonction `extract_dvf()` |
-| Carte des loyers 2024 / 2025 | **Automatique** — idem | `src/extract.py`, fonction `extract_loyers_complement()` |
-| IRCOM (revenus 2024) | **Automatique** — idem | `src/extract.py`, fonction `extract_ircom()` |
-| LOVAC (logements vacants) | **Automatique** — idem | `src/extract.py`, fonction `extract_lovac()` |
-| IRL (INSEE) | **Automatique** — appel direct à l'API INSEE | `src/API.py`, fonction `recuperer_irl()` |
-| Données géo/démographiques | **Automatique** — appel direct à l'API du gouvernement | `src/API.py`, fonction `recuperer_toutes_communes()` |
-| Taux d'intérêt des crédits (Banque de France) | **Manuel** — téléchargé et déposé par l'utilisateur du projet | `data/raw/additional_data/new_housing_loans_interest_rate.csv` |
-| Flux de nouveaux crédits (Banque de France) | **Manuel** — idem | `data/raw/additional_data/new_housing_loans_flow.csv` |
-| Taux d'endettement des ménages (Banque de France) | **Manuel** — idem | `data/raw/additional_data/household_debt_ratio.csv` |
+**Seuls les 3 fichiers Banque de France sont manuels** (les 3 seuls fichiers présents dans
+`data/raw/additional_data/`). Tout le reste est récupéré **automatiquement par le code, en
+direct sur internet, à chaque exécution du pipeline** — aucun fichier n'existe pour eux dans
+le projet. Voici l'URL exacte appelée pour chacun.
 
-**Seuls les 3 fichiers Banque de France sont manuels** : ce sont les 3 seuls fichiers
-présents dans `data/raw/additional_data/`. Tout le reste (DVF 2025, Carte des loyers, IRCOM,
-LOVAC, IRL, données géographiques) n'existe sous forme de fichier nulle part dans le projet
-— c'est le code qui va chercher la donnée en direct sur internet à chaque exécution, via les
-URL/identifiants de jeux de données codés dans `src/extract.py` et `src/API.py` (le détail de
-chaque lien exact est donné section par section ci-dessous).
+| Source | Méthode | URL appelée par le code |
+|---|---|---|
+| Transactions DVF 2025 | Automatique — téléchargement direct | [`https://files.data.gouv.fr/geo-dvf/latest/csv/2025/full.csv.gz`](https://files.data.gouv.fr/geo-dvf/latest/csv/2025/full.csv.gz) |
+| Carte des loyers 2024 | Automatique — en 2 étapes* | [`https://www.data.gouv.fr/api/1/datasets/6751be987c09f4be821c6934/`](https://www.data.gouv.fr/api/1/datasets/6751be987c09f4be821c6934/) → fichiers `pred-app-mef-dhup.csv` / `pred-mai-mef-dhup.csv` sur `static.data.gouv.fr` |
+| Carte des loyers 2025 | Automatique — en 2 étapes* | [`https://www.data.gouv.fr/api/1/datasets/693aa2feed1bf4da603faa49/`](https://www.data.gouv.fr/api/1/datasets/693aa2feed1bf4da603faa49/) → mêmes fichiers, millésime 2025 |
+| IRCOM (revenus 2024) | Automatique — en 2 étapes* | [`https://www.data.gouv.fr/api/1/datasets/536998cba3a729239d20505e/`](https://www.data.gouv.fr/api/1/datasets/536998cba3a729239d20505e/) → [`ircom-2025-revenus-2024.zip`](https://static.data.gouv.fr/resources/limpot-sur-le-revenu-par-collectivite-territoriale-ircom/20260526-131537/ircom-2025-revenus-2024.zip) |
+| LOVAC (logements vacants) | Automatique — en 2 étapes* | [`https://www.data.gouv.fr/api/1/datasets/61816c6e23197bb34835228e/`](https://www.data.gouv.fr/api/1/datasets/61816c6e23197bb34835228e/) → [`lovac-opendata-communes26.csv`](https://static.data.gouv.fr/resources/logements-vacants-du-parc-prive-par-commune-departement-region-france/20260625-163627/lovac-opendata-communes26.csv) |
+| IRL (INSEE) | Automatique — appel direct | [`https://www.bdm.insee.fr/series/sdmx/data/SERIES_BDM/001515333`](https://www.bdm.insee.fr/series/sdmx/data/SERIES_BDM/001515333) |
+| Données géo/démographiques | Automatique — appel direct | [`https://geo.api.gouv.fr/communes`](https://geo.api.gouv.fr/communes) |
+| Taux d'intérêt des crédits (Banque de France) | **Manuel** | déposé dans `data/raw/additional_data/new_housing_loans_interest_rate.csv` |
+| Flux de nouveaux crédits (Banque de France) | **Manuel** | déposé dans `data/raw/additional_data/new_housing_loans_flow.csv` |
+| Taux d'endettement des ménages (Banque de France) | **Manuel** | déposé dans `data/raw/additional_data/household_debt_ratio.csv` |
+
+*\* "En 2 étapes" : le code appelle d'abord l'API de data.gouv.fr pour lister les fichiers du
+jeu de données, puis télécharge automatiquement le bon fichier CSV/ZIP parmi ceux proposés
+(le nom exact du fichier change à chaque mise à jour du jeu de données par sa source ; le
+code s'adapte tout seul, pas besoin de le modifier). Les URLs de fichiers indiquées ci-dessus
+sont celles actuellement renvoyées par l'API — vérifiées en conditions réelles à l'instant où
+ce document a été écrit.*
+
+Le code correspondant se trouve dans `src/extract.py` (fonctions `extract_dvf`,
+`extract_loyers_complement`, `extract_ircom`, `extract_lovac`) et `src/API.py` (fonctions
+`recuperer_irl`, `recuperer_toutes_communes`).
 
 ## Vue d'ensemble
 

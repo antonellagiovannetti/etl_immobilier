@@ -62,7 +62,8 @@ except Exception as e:
 @st.cache_data(ttl=300)
 def load_dashboard_data():
     query = """
-        SELECT c.ville, trim(c.departement) AS departement, c.latitude, c.longitude,
+        SELECT c.ville, trim(c.departement) AS departement, c.code_insee,
+               c.latitude, c.longitude,
                s.prix_m2_median, s.loyer_m2_moyen, s.rendement_brut,
                s.taux_vacance, s.ratio_effort_fiscal, s.score_attractivite,
                s.n_transactions
@@ -84,10 +85,28 @@ def load_densite_par_departement():
     """
     return pd.read_sql(query, engine)
 
+@st.cache_data(ttl=300)
+def load_annees_disponibles() -> list[int]:
+    query = "SELECT DISTINCT annee FROM operationnel.transactions ORDER BY annee DESC;"
+    return pd.read_sql(query, engine)["annee"].tolist()
+
+@st.cache_data(ttl=300)
+def load_prix_par_departement(annee: int):
+    query = """
+        SELECT trim(c.departement) AS departement,
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY t.prix_m2) AS prix_m2_median
+        FROM operationnel.transactions t
+        JOIN operationnel.communes c ON t.id_ville = c.id_ville
+        WHERE t.annee = %(annee)s
+        GROUP BY trim(c.departement);
+    """
+    return pd.read_sql(query, engine, params={"annee": annee})
+
 
 try:
     df = load_dashboard_data()
     densite_dept = load_densite_par_departement()
+    annees_disponibles = load_annees_disponibles()
 except Exception as e:
     st.error("Impossible de charger les données du dashboard depuis PostgreSQL.")
     st.caption(str(e))
@@ -116,6 +135,13 @@ selected_dept = st.sidebar.multiselect(
 
 # Application du filtre si sélectionné
 df_filtered = df[df["departement"].isin(selected_dept)] if selected_dept else df
+
+# Prix au m2 : toujours la derniere annee reellement disponible dans les
+# transactions (pas de prediction sur 2025/2026, la donnee n'existe pas
+# encore cote DVF - publiee avec ~6 mois de retard). Affiche clairement
+# l'annee utilisee pour eviter toute ambiguite.
+derniere_annee_prix = max(annees_disponibles)
+prix_dept_derniere_annee = load_prix_par_departement(derniere_annee_prix)
 
 # Fonction reutilisable : carte par commune coloree selon une colonne du KPI
 def render_commune_map(data: pd.DataFrame, value_col: str, colors: list[str], legend: str, map_key: str):
@@ -185,6 +211,7 @@ st.dataframe(
     column_config={
         "ville": "Ville",
         "departement": "Département",
+        "code_insee": None,
         "latitude": None,
         "longitude": None,
         "prix_m2_median": st.column_config.NumberColumn("Prix médian (€/m²)", format="%d €"),
@@ -247,47 +274,59 @@ st.pyplot(fig)
 
 st.markdown("---")
 
-# Section 4 : Cartes choroplethes par departement (prix au m2, densite)
-st.subheader("🗺️ Cartes par département")
+# Section 5 : Choroplethes prix au m2 / densite — par commune si un
+# departement est selectionne (contour reel de chaque ville), sinon par
+# departement pour garder une carte nationale lisible et rapide.
 DEPARTEMENTS_GEOJSON = "https://france-geojson.gregoiredavid.fr/repo/departements.geojson"
 
-col3, col4 = st.columns(2)
 
-with col3:
-    st.markdown("**Prix médian au m² (moyenne par département)**")
-    prix_dept = df_filtered.groupby("departement", as_index=False)["prix_m2_median"].mean()
-    carte_prix = folium.Map(location=[46.6, 2.6], zoom_start=5, tiles="cartodbpositron")
-    folium.Choropleth(
+def render_choropleth(data: pd.DataFrame, columns: list[str], fill_color: str, legend: str, map_key: str):
+    carte = folium.Map(location=[46.6, 2.6], zoom_start=5, tiles="cartodbpositron")
+    choropleth = folium.Choropleth(
         geo_data=DEPARTEMENTS_GEOJSON,
-        data=prix_dept,
-        columns=["departement", "prix_m2_median"],
+        data=data,
+        columns=columns,
         key_on="feature.properties.code",
-        fill_color="YlOrRd",
+        fill_color=fill_color,
         fill_opacity=0.8,
         line_opacity=0.3,
         nan_fill_color="white",
-        legend_name="Prix médian (€/m²)",
-    ).add_to(carte_prix)
-    st_folium(carte_prix, use_container_width=True, height=450, returned_objects=[])
+        legend_name=legend,
+    ).add_to(carte)
+    # Survol : nom du departement (le contour seul ne le montre pas)
+    choropleth.geojson.add_child(folium.GeoJsonTooltip(fields=["nom"], aliases=["Département :"]))
+    st_folium(carte, use_container_width=True, height=450, returned_objects=[], key=f"choropleth_{map_key}")
 
+
+st.subheader("🗺️ Cartes par département")
+
+col3, col4 = st.columns(2)
+with col3:
+    st.markdown(f"**Prix médian au m² — année {derniere_annee_prix} (dernière année disponible)**")
+    st.caption(
+        f"Médiane du prix au m² des transactions {derniere_annee_prix} par département. "
+        "Pas de projection sur les années suivantes tant que les données ne sont pas "
+        "publiées (DVF publié avec ~6 mois de retard) : donnée réelle uniquement."
+    )
+    prix_dept_filtre = prix_dept_derniere_annee[
+        prix_dept_derniere_annee["departement"].isin(selected_dept)
+    ] if selected_dept else prix_dept_derniere_annee
+    render_choropleth(
+        prix_dept_filtre, ["departement", "prix_m2_median"],
+        "YlOrRd", "Prix médian (€/m²)", "prix_dept",
+    )
 with col4:
     st.markdown("**Densité de population (hab/km², moyenne par département)**")
-    carte_densite = folium.Map(location=[46.6, 2.6], zoom_start=5, tiles="cartodbpositron")
-    folium.Choropleth(
-        geo_data=DEPARTEMENTS_GEOJSON,
-        data=densite_dept,
-        columns=["departement", "densite"],
-        key_on="feature.properties.code",
-        fill_color="PuBu",
-        fill_opacity=0.8,
-        line_opacity=0.3,
-        nan_fill_color="white",
-        legend_name="Densité (habitants/km²)",
-    ).add_to(carte_densite)
-    st_folium(carte_densite, use_container_width=True, height=450, returned_objects=[])
+    st.caption("population / superficie_km2, moyenne des communes du département (source geo.api.gouv.fr).")
+    densite_dept_filtre = densite_dept[
+        densite_dept["departement"].isin(selected_dept)
+    ] if selected_dept else densite_dept
+    render_choropleth(
+        densite_dept_filtre, ["departement", "densite"],
+        "PuBu", "Densité (habitants/km²)", "densite_dept",
+    )
 
 st.caption(
-    "Moyenne par département des valeurs communales du filtre courant. "
-    "Cartes limitées à la France métropolitaine (contours des départements d'outre-mer "
-    "non disponibles dans le fond de carte utilisé)."
+    "Cartes limitées à la France métropolitaine (contours des départements "
+    "d'outre-mer non disponibles dans le fond de carte utilisé)."
 )

@@ -62,7 +62,7 @@ except Exception as e:
 @st.cache_data(ttl=300)
 def load_dashboard_data():
     query = """
-        SELECT c.ville, c.departement, c.latitude, c.longitude,
+        SELECT c.ville, trim(c.departement) AS departement, c.latitude, c.longitude,
                s.prix_m2_median, s.loyer_m2_moyen, s.rendement_brut,
                s.taux_vacance, s.ratio_effort_fiscal, s.score_attractivite,
                s.n_transactions
@@ -73,8 +73,42 @@ def load_dashboard_data():
     """
     return pd.read_sql(query, engine)
 
+@st.cache_data(ttl=300)
+def load_densite_par_departement():
+    query = """
+        SELECT trim(c.departement) AS departement, avg(d.densite) AS densite
+        FROM operationnel.communes c
+        JOIN operationnel.demographics d ON c.id_ville = d.id_ville
+        WHERE d.densite IS NOT NULL
+        GROUP BY trim(c.departement);
+    """
+    return pd.read_sql(query, engine)
+
+
+@st.cache_data(ttl=300)
+def load_transactions_vs_taux_interet():
+    query_transactions = """
+        SELECT extract(year FROM date_transaction)::int AS annee,
+               extract(month FROM date_transaction)::int AS mois,
+               count(*) AS nb_transactions,
+               avg(prix) AS montant_moyen
+        FROM operationnel.transactions
+        GROUP BY 1, 2;
+    """
+    query_macro = """
+        SELECT annee, mois, taux_interet
+        FROM operationnel.indicateurs_macro
+        WHERE taux_interet IS NOT NULL AND mois IS NOT NULL;
+    """
+    transactions_mensuelles = pd.read_sql(query_transactions, engine)
+    taux_interet = pd.read_sql(query_macro, engine)
+    return transactions_mensuelles.merge(taux_interet, on=["annee", "mois"], how="inner")
+
+
 try:
     df = load_dashboard_data()
+    densite_dept = load_densite_par_departement()
+    transactions_taux = load_transactions_vs_taux_interet()
 except Exception as e:
     st.error("Impossible de charger les données du dashboard depuis PostgreSQL.")
     st.caption(str(e))
@@ -181,15 +215,16 @@ else:
 
 st.markdown("---")
 
-# Section 3 : Graphiques Métier (Rendement et Vacance)
+# Section 3 : Graphiques Métier (Effort fiscal et Vacance)
 st.subheader("Analyses des indicateurs clés (Top 10)")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    st.markdown("**Histogramme du rendement brut (%)**")
-    # Utilisation du graphique natif de Streamlit pour la simplicité et la performance
-    st.bar_chart(top_10.set_index("ville")["rendement_brut"])
+    st.markdown("**Ratio d'effort fiscal (Top 10)**")
+    # Le rendement brut est deja visible dans le tableau du Top 10 ci-dessus ;
+    # le ratio d'effort fiscal (loyer / revenu fiscal) apporte une info neuve.
+    st.bar_chart(top_10.set_index("ville")["ratio_effort_fiscal"])
 
 with col2:
     st.markdown("**Occupé vs vacant — commune sélectionnée**")
@@ -205,3 +240,71 @@ with col2:
     )
     ax.axis("equal")
     st.pyplot(fig)
+
+st.markdown("---")
+
+# Section 4 : Cartes choroplethes par departement (prix au m2, densite)
+st.subheader("🗺️ Cartes par département")
+DEPARTEMENTS_GEOJSON = "https://france-geojson.gregoiredavid.fr/repo/departements.geojson"
+
+col3, col4 = st.columns(2)
+
+with col3:
+    st.markdown("**Prix médian au m² (moyenne par département)**")
+    prix_dept = df_filtered.groupby("departement", as_index=False)["prix_m2_median"].mean()
+    carte_prix = folium.Map(location=[46.6, 2.6], zoom_start=5, tiles="cartodbpositron")
+    folium.Choropleth(
+        geo_data=DEPARTEMENTS_GEOJSON,
+        data=prix_dept,
+        columns=["departement", "prix_m2_median"],
+        key_on="feature.properties.code",
+        fill_color="YlOrRd",
+        fill_opacity=0.8,
+        line_opacity=0.3,
+        nan_fill_color="white",
+        legend_name="Prix médian (€/m²)",
+    ).add_to(carte_prix)
+    st_folium(carte_prix, use_container_width=True, height=450, returned_objects=[])
+
+with col4:
+    st.markdown("**Densité de population (hab/km², moyenne par département)**")
+    carte_densite = folium.Map(location=[46.6, 2.6], zoom_start=5, tiles="cartodbpositron")
+    folium.Choropleth(
+        geo_data=DEPARTEMENTS_GEOJSON,
+        data=densite_dept,
+        columns=["departement", "densite"],
+        key_on="feature.properties.code",
+        fill_color="PuBu",
+        fill_opacity=0.8,
+        line_opacity=0.3,
+        nan_fill_color="white",
+        legend_name="Densité (habitants/km²)",
+    ).add_to(carte_densite)
+    st_folium(carte_densite, use_container_width=True, height=450, returned_objects=[])
+
+st.caption(
+    "Cartes limitées à la France métropolitaine (contours des départements d'outre-mer "
+    "non disponibles dans le fond de carte utilisé)."
+)
+
+st.markdown("---")
+
+# Section 5 : Annexe — taux d'interet vs volume de transactions (hors score d'attractivite)
+st.subheader("📎 Annexe — Marché du crédit vs volume de transactions")
+st.caption(
+    "Hors périmètre du score d'attractivité, mais utile en contexte : le nombre de "
+    "transactions mensuelles suit-il le taux d'intérêt moyen des crédits immobiliers ?"
+)
+
+fig2, ax2 = plt.subplots()
+scatter = ax2.scatter(
+    transactions_taux["taux_interet"],
+    transactions_taux["nb_transactions"],
+    c=transactions_taux["annee"],
+    cmap="viridis",
+    alpha=0.75,
+)
+ax2.set_xlabel("Taux d'intérêt moyen des crédits (%)")
+ax2.set_ylabel("Nombre de transactions (par mois)")
+fig2.colorbar(scatter, ax=ax2, label="Année")
+st.pyplot(fig2)

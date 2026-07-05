@@ -10,7 +10,7 @@ SET search_path TO operationnel;
 -- ── Table centrale : référentiel géographique ──────────────
 CREATE TABLE IF NOT EXISTS operationnel.communes (
     id_ville        INTEGER PRIMARY KEY,
-    departement     CHAR(2)         NOT NULL,
+    departement     CHAR(3)         NOT NULL,
     ville           VARCHAR(100)    NOT NULL,
     latitude        FLOAT,
     longitude       FLOAT,

@@ -360,6 +360,49 @@ def transform_foyers_fiscaux(
     return combined.drop_duplicates(subset=["id_ville", "annee"]).reset_index(drop=True)
 
 
+def transform_parc_immobilier(
+    old_df: pd.DataFrame, lovac_df: pd.DataFrame | None = None
+) -> pd.DataFrame:
+    """
+    Harmonise parc_immobilier.csv (2019-2021) avec le jeu LOVAC (2020-2026,
+    cf. extract_lovac), qui stocke une paire de colonnes par annee.
+    """
+    old = old_df.rename(columns={"date": "annee"}).copy()
+    old["departement"] = old["departement"].astype(str)
+    old["id_ville"] = [
+        compute_global_id_ville(dep, ville)
+        for dep, ville in zip(old["departement"], old["id_ville"])
+    ]
+    parts = [old[["id_ville", "annee", "n_logements", "n_logements_vacants"]]]
+
+    if lovac_df is not None:
+        year_suffixes = sorted(
+            col.rsplit("_", 1)[-1]
+            for col in lovac_df.columns
+            if col.startswith("pp_vacant_") and col.rsplit("_", 1)[-1].isdigit()
+        )
+        for suffix in year_suffixes:
+            vacants_col = f"pp_vacant_{suffix}"
+            total_col = f"ff_pp_total_{suffix}"
+            if total_col not in lovac_df.columns:
+                continue
+
+            subset = lovac_df[["CODGEO_26", vacants_col, total_col]].copy()
+            deps_communes = subset["CODGEO_26"].map(split_insee_code)
+            subset["id_ville"] = [
+                compute_global_id_ville(dep, commune) for dep, commune in deps_communes
+            ]
+            subset["annee"] = 2000 + int(suffix)
+            subset = subset.rename(
+                columns={vacants_col: "n_logements_vacants", total_col: "n_logements"}
+            )
+            parts.append(subset[["id_ville", "annee", "n_logements", "n_logements_vacants"]])
+
+    combined = pd.concat(parts, ignore_index=True)
+    combined["taux_vacance"] = 100 * combined["n_logements_vacants"] / combined["n_logements"]
+    return combined.drop_duplicates(subset=["id_ville", "annee"]).reset_index(drop=True)
+
+
 def transform_indicateurs_macro(
     taux_interet_df: pd.DataFrame,
     flux_emprunts_df: pd.DataFrame,

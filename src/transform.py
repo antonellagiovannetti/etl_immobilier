@@ -207,17 +207,34 @@ def build_demographics(communes_api_df: pd.DataFrame) -> pd.DataFrame:
     """
     Construit demographics.csv (population, superficie, densite) a partir du
     meme referentiel que build_communes.
+
+    Modifications demandees :
+    1. Supprimer la colonne vefa si elle existe.
+    2. Supprimer les lignes ou population ou densite est vide/NaN ou egal a 0.
     """
     df = communes_api_df.copy()
+
+    # 1 - Supprimer la colonne vefa si elle existe dans la source
+    if "vefa" in df.columns:
+        df = df.drop(columns=["vefa"])
+
     deps_communes = df["code_insee"].map(split_insee_code)
     df["id_ville"] = [
         compute_global_id_ville(dep, commune) for dep, commune in deps_communes
     ]
-    df["superficie_km2"] = df["superficie_m2"] / 1_000_000
+
+    df["superficie_km2"] = pd.to_numeric(df["superficie_m2"], errors="coerce") / 1_000_000
+    df["population"] = pd.to_numeric(df["population"], errors="coerce")
     df["densite"] = df["population"] / df["superficie_km2"]
+
+    # 2 - Supprimer les lignes ou population ou densite est vide/NaN ou egal a 0
+    df = df.dropna(subset=["population", "densite"])
+    df = df[(df["population"] != 0) & (df["densite"] != 0)]
+
     return df[
         ["id_ville", "code_insee", "code_region", "nom_region", "population", "superficie_km2", "densite"]
     ].drop_duplicates(subset=["id_ville"]).reset_index(drop=True)
+
 
 
 def split_insee_code(code: str) -> tuple[str, int]:
@@ -232,6 +249,31 @@ def split_insee_code(code: str) -> tuple[str, int]:
     else:
         departement, commune = code[:2], code[2:]
     return departement, int(commune)
+
+
+
+
+def fill_numeric_medians(df: pd.DataFrame, columns: list[str] | None = None) -> pd.DataFrame:
+    """
+    Remplit les valeurs NaN des colonnes numériques par la médiane.
+    Si columns est fourni, seules ces colonnes sont traitées.
+    """
+    df = df.copy()
+
+    if columns is None:
+        columns = [
+            col for col in df.columns
+            if pd.api.types.is_numeric_dtype(df[col]) and col not in ("id_ville", "annee", "mois")
+        ]
+
+    for col in columns:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+            median_value = df[col].median()
+            if pd.notna(median_value):
+                df[col] = df[col].fillna(median_value)
+
+    return df
 
 
 def transform_loyers(
@@ -302,49 +344,19 @@ def transform_foyers_fiscaux(
         )
 
     combined = pd.concat(parts, ignore_index=True)
-    return combined.drop_duplicates(subset=["id_ville", "annee"]).reset_index(drop=True)
 
+    # 7 - Corriger montant_impot_moyen : transformer les valeurs negatives en positives
+    if "montant_impot_moyen" in combined.columns:
+        combined["montant_impot_moyen"] = pd.to_numeric(
+            combined["montant_impot_moyen"], errors="coerce"
+        ).abs()
 
-def transform_parc_immobilier(
-    old_df: pd.DataFrame, lovac_df: pd.DataFrame | None = None
-) -> pd.DataFrame:
-    """
-    Harmonise parc_immobilier.csv (2019-2021) avec le jeu LOVAC (2020-2026,
-    cf. extract_lovac), qui stocke une paire de colonnes par annee.
-    """
-    old = old_df.rename(columns={"date": "annee"}).copy()
-    old["departement"] = old["departement"].astype(str)
-    old["id_ville"] = [
-        compute_global_id_ville(dep, ville)
-        for dep, ville in zip(old["departement"], old["id_ville"])
-    ]
-    parts = [old[["id_ville", "annee", "n_logements", "n_logements_vacants"]]]
+    # 3 - Remplir les valeurs vides/NaN des colonnes numeriques par la mediane
+    combined = fill_numeric_medians(
+        combined,
+        columns=["revenu_fiscal_moyen", "montant_impot_moyen", "n_foyers_fiscaux"]
+    )
 
-    if lovac_df is not None:
-        year_suffixes = sorted(
-            col.rsplit("_", 1)[-1]
-            for col in lovac_df.columns
-            if col.startswith("pp_vacant_") and col.rsplit("_", 1)[-1].isdigit()
-        )
-        for suffix in year_suffixes:
-            vacants_col = f"pp_vacant_{suffix}"
-            total_col = f"ff_pp_total_{suffix}"
-            if total_col not in lovac_df.columns:
-                continue
-
-            subset = lovac_df[["CODGEO_26", vacants_col, total_col]].copy()
-            deps_communes = subset["CODGEO_26"].map(split_insee_code)
-            subset["id_ville"] = [
-                compute_global_id_ville(dep, commune) for dep, commune in deps_communes
-            ]
-            subset["annee"] = 2000 + int(suffix)
-            subset = subset.rename(
-                columns={vacants_col: "n_logements_vacants", total_col: "n_logements"}
-            )
-            parts.append(subset[["id_ville", "annee", "n_logements", "n_logements_vacants"]])
-
-    combined = pd.concat(parts, ignore_index=True)
-    combined["taux_vacance"] = 100 * combined["n_logements_vacants"] / combined["n_logements"]
     return combined.drop_duplicates(subset=["id_ville", "annee"]).reset_index(drop=True)
 
 
@@ -387,6 +399,22 @@ def transform_indicateurs_macro(
         .merge(taux_endettement, on=["annee", "mois"], how="outer")
         .merge(irl, on=["annee", "mois"], how="outer")
     )
+    # 4 - Supprimer les lignes de 1999-01 jusqu'a 2010-11 inclus
+    periode_a_supprimer = (
+        (merged["annee"] >= 1999)
+        & (
+            (merged["annee"] < 2010)
+            | ((merged["annee"] == 2010) & (merged["mois"] <= 11))
+        )
+    )
+    merged = merged[~periode_a_supprimer].copy()
+
+    # 5 - Remplir les valeurs vides/NaN des indicateurs numeriques par la mediane
+    merged = fill_numeric_medians(
+        merged,
+        columns=["taux_interet", "flux_emprunts_me", "taux_endettement", "irl"]
+    )
+
     return merged.sort_values(["annee", "mois"]).reset_index(drop=True)
 
 

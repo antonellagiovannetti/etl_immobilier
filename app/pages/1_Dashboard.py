@@ -91,6 +91,13 @@ def load_annees_disponibles() -> list[int]:
     return pd.read_sql(query, engine)["annee"].tolist()
 
 @st.cache_data(ttl=300)
+def load_annee_ref() -> int:
+    # Annee de reference utilisee par compute_kpi() pour choisir la donnee la
+    # plus recente de loyers/foyers_fiscaux/parc_immobilier (voir transform.py).
+    query = "SELECT DISTINCT annee_ref FROM operationnel.score_attractivite;"
+    return int(pd.read_sql(query, engine)["annee_ref"].iloc[0])
+
+@st.cache_data(ttl=300)
 def load_prix_par_departement(annee: int):
     query = """
         SELECT trim(c.departement) AS departement,
@@ -107,6 +114,7 @@ try:
     df = load_dashboard_data()
     densite_dept = load_densite_par_departement()
     annees_disponibles = load_annees_disponibles()
+    annee_ref = load_annee_ref()
 except Exception as e:
     st.error("Impossible de charger les données du dashboard depuis PostgreSQL.")
     st.caption(str(e))
@@ -190,22 +198,26 @@ st.subheader("Vue d'ensemble")
 st.caption(
     "Score d'attractivité = 35% rendement brut + 25% ratio d'effort fiscal (inversé) "
     "+ 20% revenu fiscal moyen + 20% taux de vacance (inversé), chaque composante "
-    "normalisée de 0 à 100 au niveau national."
+    "normalisée de 0 à 100 au niveau national.\n\n"
+    f"⚠️ Années des données sources — **prix et rendement : {derniere_annee_prix}** "
+    f"(transactions, dernière année disponible) · **loyer, revenu fiscal, vacance : "
+    f"{annee_ref}** (dernière année disponible commune à ces 3 sources, généralement "
+    "en retard par rapport aux transactions)."
 )
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 kpi1.metric("Communes évaluées", f"{len(df_filtered):,}")
 kpi2.metric("Score moyen", f"{df_filtered['score_attractivite'].mean():.1f}/100")
-kpi3.metric("Rendement brut moyen", f"{df_filtered['rendement_brut'].mean():.2f} %")
-kpi4.metric("Taux de vacance moyen", f"{df_filtered['taux_vacance'].mean():.2f} %")
+kpi3.metric(f"Rendement brut moyen ({derniere_annee_prix}/{annee_ref})", f"{df_filtered['rendement_brut'].mean():.2f} %")
+kpi4.metric(f"Taux de vacance moyen ({annee_ref})", f"{df_filtered['taux_vacance'].mean():.2f} %")
 
 st.markdown("---")
 
 # Section 1 : Le Top 10 National / Filtré
 st.subheader("🏆 Top 10 des Communes les plus attractives")
 st.caption(
-    "Classement par score_attractivite décroissant, parmi les communes ayant ≥ 5 "
-    "transactions sur la dernière année disponible (marché actuel, pas une moyenne "
-    "pluriannuelle)."
+    f"Classement par score_attractivite décroissant, parmi les communes ayant ≥ 5 "
+    f"transactions en **{derniere_annee_prix}** (marché actuel, pas une moyenne "
+    f"pluriannuelle). Loyer/revenu fiscal/vacance : données **{annee_ref}**."
 )
 top_10 = df_filtered.head(10)
 
@@ -234,7 +246,11 @@ st.markdown("---")
 
 # Section 2 : Carte interactive (Folium) — colormap du score d'attractivite
 st.subheader("🗺️ Carte du score d'attractivité")
-st.caption("score_attractivite (0-100) — voir la formule dans la section *Vue d'ensemble* ci-dessus.")
+st.caption(
+    f"score_attractivite (0-100) — voir la formule dans la section *Vue d'ensemble* "
+    f"ci-dessus. Données {derniere_annee_prix} (transactions) / {annee_ref} (loyers, "
+    "revenus, vacance)."
+)
 render_commune_map(
     df_filtered, "score_attractivite",
     colors=["#d73027", "#fee08b", "#1a9850"],
@@ -249,7 +265,7 @@ st.subheader("🗺️ Carte du ratio d'effort fiscal")
 st.caption(
     "ratio_effort_fiscal = (loyer_m2_moyen × 12 × 50) / revenu_fiscal_moyen — "
     "indicateur de risque locataire : plus il est élevé, plus le loyer pèse lourd "
-    "dans le revenu des habitants de la commune (plus bas = mieux)."
+    f"dans le revenu des habitants de la commune (plus bas = mieux). Données {annee_ref}."
 )
 render_commune_map(
     df_filtered, "ratio_effort_fiscal",
@@ -261,8 +277,8 @@ render_commune_map(
 st.markdown("---")
 
 # Section 4 : Occupé vs vacant, pour une commune du Top 10
-st.subheader("Occupé vs vacant — commune sélectionnée")
-st.caption("taux_vacance = logements vacants / logements totaux × 100, sur l'année de référence du score.")
+st.subheader(f"Occupé vs vacant — commune sélectionnée (données {annee_ref})")
+st.caption(f"taux_vacance = logements vacants / logements totaux × 100, année {annee_ref}.")
 selected_ville = st.selectbox("Commune du Top 10", top_10["ville"])
 taux_vacance_selection = top_10.loc[top_10["ville"] == selected_ville, "taux_vacance"].iloc[0]
 fig, ax = plt.subplots()
@@ -321,7 +337,12 @@ with col3:
     )
 with col4:
     st.markdown("**Densité de population (hab/km², moyenne par département)**")
-    st.caption("population / superficie_km2, moyenne des communes du département (source geo.api.gouv.fr).")
+    st.caption(
+        "population / superficie_km2, moyenne des communes du département. "
+        "⚠️ Population issue de l'API officielle geo.api.gouv.fr, mise à jour en continu "
+        "par le gouvernement — l'API ne communique pas de millésime précis pour ce chiffre "
+        "(dernier recensement INSEE disponible côté API, pas une année figée par nous)."
+    )
     densite_dept_filtre = densite_dept[
         densite_dept["departement"].isin(selected_dept)
     ] if selected_dept else densite_dept

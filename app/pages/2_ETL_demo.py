@@ -176,9 +176,14 @@ def run_pipeline() -> None:
     update("extract", "1. EXTRACT", "8 sources brutes", "neon-extract", "🟢 Termine", log_extract)
 
     # ---- 2. TRANSFORM ----
-    update("transform", "2. TRANSFORM", "Nettoyage & harmonisation", "neon-transform", "🔵 En cours...", "Filtre qualite transactions (>= 5 sur 2022-2024)...")
-    transactions = transform.transform_transactions(df_transactions_raw)
-    log_transform = f"transactions : {len(transactions):,} lignes retenues\n"
+    update("transform", "2. TRANSFORM", "Nettoyage & harmonisation", "neon-transform", "🔵 En cours...", "Fusion DVF 2025 + filtre qualite transactions...")
+    dvf_supplement = transform.transform_dvf_supplement(
+        df_dvf_2025, id_transaction_offset=int(df_transactions_raw["id_transaction"].max()) + 1
+    )
+    transactions = transform.transform_transactions(
+        pd.concat([df_transactions_raw, dvf_supplement], ignore_index=True)
+    )
+    log_transform = f"transactions : {len(transactions):,} lignes retenues (dont 2025)\n"
 
     update("transform", "2. TRANSFORM", "Nettoyage & harmonisation", "neon-transform", "🔵 En cours...", log_transform + "Harmonisation loyers/foyers/parc...")
     loyers = transform.transform_loyers(pd.read_csv(PROJECT_ROOT / "data/raw/loyers.csv"), [loyers_2024, loyers_2025])

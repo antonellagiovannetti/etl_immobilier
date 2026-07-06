@@ -23,9 +23,9 @@ le projet. Voici l'URL exacte appelée pour chacun.
 | LOVAC (logements vacants) | Automatique — en 2 étapes* | [`https://www.data.gouv.fr/api/1/datasets/61816c6e23197bb34835228e/`](https://www.data.gouv.fr/api/1/datasets/61816c6e23197bb34835228e/) → [`lovac-opendata-communes26.csv`](https://static.data.gouv.fr/resources/logements-vacants-du-parc-prive-par-commune-departement-region-france/20260625-163627/lovac-opendata-communes26.csv) |
 | IRL (INSEE) | Automatique — appel direct | [`https://www.bdm.insee.fr/series/sdmx/data/SERIES_BDM/001515333`](https://www.bdm.insee.fr/series/sdmx/data/SERIES_BDM/001515333) |
 | Données géo/démographiques | Automatique — appel direct | [`https://geo.api.gouv.fr/communes`](https://geo.api.gouv.fr/communes) |
-| Taux d'intérêt des crédits (Banque de France) | **Manuel** | déposé dans `data/raw/additional_data/new_housing_loans_interest_rate.csv` |
-| Flux de nouveaux crédits (Banque de France) | **Manuel** | déposé dans `data/raw/additional_data/new_housing_loans_flow.csv` |
-| Taux d'endettement des ménages (Banque de France) | **Manuel** | déposé dans `data/raw/additional_data/household_debt_ratio.csv` |
+| Taux d'intérêt des crédits (Banque de France) | **Manuel** | déposé dans `data/raw/additional_data/new_housing_loans_interest_rate.csv`via `https://webstat.banque-france.fr/fr/catalogue/mir1/MIR1.M.FR.B.A22HR.A.R.A.2254U6.EUR.N` |
+| Flux de nouveaux crédits (Banque de France) | **Manuel** | déposé dans `data/raw/additional_data/new_housing_loans_flow.csv` via `https://webstat.banque-france.fr/fr/catalogue/mir1/MIR1.M.FR.B.A22HR.A.5.A.2254U6.EUR.N` |
+| Taux d'endettement des ménages (Banque de France) | **Manuel** | déposé dans `data/raw/additional_data/household_debt_ratio.csv` via `https://webstat.banque-france.fr/fr/catalogue/cnfsi/CNFSI.Q.S.FR.W0.S1M.S1.N.L.LE.DETT.T._Z.XDC_R_B6G_S1M._T.S.V.N._T` |
 
 *\* "En 2 étapes" : le code appelle d'abord l'API de data.gouv.fr pour lister les fichiers du
 jeu de données, puis télécharge automatiquement le bon fichier CSV/ZIP parmi ceux proposés

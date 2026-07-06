@@ -5,6 +5,8 @@ import json
 import os
 import re
 import sys
+import time
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -104,10 +106,20 @@ def extract_transactions_npz(
     return pd.DataFrame(extracted)
 
 
-def _download_bytes(url: str, timeout: int = 60) -> bytes:
+def _download_bytes(url: str, timeout: int = 60, retries: int = 3) -> bytes:
+    # Les CDN de data.gouv.fr/INSEE renvoient parfois un 404/503 ponctuel sans
+    # rapport avec la disponibilite reelle du fichier (rate-limit, cache pas
+    # encore chaud) : un retry avec backoff evite de perdre tout le pipeline
+    # (~10 min) pour un aleas reseau d'une seconde.
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return response.read()
+    for attempt in range(1, retries + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return response.read()
+        except (urllib.error.URLError, TimeoutError):
+            if attempt == retries:
+                raise
+            time.sleep(2 ** attempt)
 
 
 def _data_gouv_resources(dataset_id: str) -> list[dict]:

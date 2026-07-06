@@ -262,3 +262,203 @@ if st.button("Lancer le pipeline complet", type="primary"):
         finally:
             lock_conn.execute(load_module.text("SELECT pg_advisory_unlock(:key)"), {"key": PIPELINE_LOCK_KEY})
             lock_conn.close()
+
+st.markdown("---")
+
+# ==========================================
+# RECHARGEMENT ALLEGE (N dernieres annees)
+# ==========================================
+# Ne touche ni communes ni demographics (leur TRUNCATE ferait cascader la
+# suppression sur toutes les tables qui les referencent par cle etrangere,
+# cf. db/schema.sql). Les transactions hors fenetre restent donc intactes :
+# seul le sous-ensemble recent est supprime puis reinsere. Les autres tables
+# (loyers/foyers_fiscaux/parc_immobilier/indicateurs_macro/score_attractivite)
+# sont petites (quelques dizaines de milliers de lignes max) et rechargees en
+# entier a chaque fois, comme dans le pipeline complet.
+SMALL_TABLES = ["loyers", "foyers_fiscaux", "parc_immobilier", "indicateurs_macro", "score_attractivite"]
+
+
+def run_pipeline_recent(n_years: int) -> None:
+    # ---- 1. EXTRACT ----
+    update("extract", "1. EXTRACT", "8 sources brutes", "neon-extract", "🔵 En cours...", "Lecture de transactions.npz...")
+    df_transactions_raw = extract.extract_transactions_npz()
+    log_extract = f"transactions.npz : {len(df_transactions_raw):,} lignes brutes\n"
+    update("extract", "1. EXTRACT", "8 sources brutes", "neon-extract", "🔵 En cours...", log_extract + "Telechargement DVF (geo-dvf, 2025)...")
+
+    df_dvf_2025 = extract.extract_dvf(2025)
+    log_extract += f"DVF 2025 (data.gouv.fr) : {len(df_dvf_2025):,} lignes\n"
+    update("extract", "1. EXTRACT", "8 sources brutes", "neon-extract", "🔵 En cours...", log_extract + "Carte des loyers 2024/2025...")
+
+    loyers_2024 = extract.extract_loyers_complement(2024)
+    loyers_2025 = extract.extract_loyers_complement(2025)
+    log_extract += f"Carte des loyers : {len(loyers_2024) + len(loyers_2025):,} lignes (2024+2025)\n"
+    update("extract", "1. EXTRACT", "8 sources brutes", "neon-extract", "🔵 En cours...", log_extract + "IRCOM (revenus des menages, DGFiP)...")
+
+    ircom_df = extract.extract_ircom()
+    log_extract += f"IRCOM : {len(ircom_df):,} lignes\n"
+    update("extract", "1. EXTRACT", "8 sources brutes", "neon-extract", "🔵 En cours...", log_extract + "LOVAC (logements vacants, Cerema)...")
+
+    lovac_df = extract.extract_lovac()
+    log_extract += f"LOVAC : {len(lovac_df):,} communes\n"
+    update("extract", "1. EXTRACT", "8 sources brutes", "neon-extract", "🔵 En cours...", log_extract + "IRL (API SDMX INSEE)...")
+
+    irl_df = API.recuperer_irl()
+
+    ti_df = extract.extract_webstat_series(PROJECT_ROOT / "data/raw/additional_data/new_housing_loans_interest_rate.csv")
+    flux_df = extract.extract_webstat_series(PROJECT_ROOT / "data/raw/additional_data/new_housing_loans_flow.csv")
+    debt_df = extract.extract_webstat_series(PROJECT_ROOT / "data/raw/additional_data/household_debt_ratio.csv")
+    log_extract += f"IRL + 3 series Banque de France : {len(irl_df)} trimestres, {len(ti_df) + len(flux_df) + len(debt_df)} observations"
+
+    update("extract", "1. EXTRACT", "8 sources brutes", "neon-extract", "🟢 Termine", log_extract)
+
+    # ---- 2. TRANSFORM ----
+    update("transform", "2. TRANSFORM", "Nettoyage & harmonisation", "neon-transform", "🔵 En cours...", "Fusion DVF 2025 + filtre qualite transactions...")
+    dvf_supplement = transform.transform_dvf_supplement(
+        df_dvf_2025, id_transaction_offset=int(df_transactions_raw["id_transaction"].max()) + 1
+    )
+    transactions_full = transform.transform_transactions(
+        pd.concat([df_transactions_raw, dvf_supplement], ignore_index=True)
+    )
+    derniere_annee = int(transactions_full["annee"].max())
+    annee_min = derniere_annee - n_years + 1
+    transactions = transactions_full[transactions_full["annee"] >= annee_min].reset_index(drop=True)
+    log_transform = (
+        f"transactions : {len(transactions_full):,} lignes au total, dont {len(transactions):,} "
+        f"sur la fenetre {annee_min}-{derniere_annee} (seule fenetre rechargee)\n"
+    )
+
+    update("transform", "2. TRANSFORM", "Nettoyage & harmonisation", "neon-transform", "🔵 En cours...", log_transform + "Harmonisation loyers/foyers/parc...")
+    loyers = transform.transform_loyers(pd.read_csv(PROJECT_ROOT / "data/raw/loyers.csv"), [loyers_2024, loyers_2025])
+    foyers = transform.transform_foyers_fiscaux(pd.read_csv(PROJECT_ROOT / "data/raw/foyers_fiscaux.csv"), ircom_df)
+    parc = transform.transform_parc_immobilier(pd.read_csv(PROJECT_ROOT / "data/raw/parc_immobilier.csv"), lovac_df)
+    log_transform += f"loyers : {len(loyers):,} | foyers_fiscaux : {len(foyers):,} | parc_immobilier : {len(parc):,}\n"
+
+    update("transform", "2. TRANSFORM", "Nettoyage & harmonisation", "neon-transform", "🔵 En cours...", log_transform + "Consolidation indicateurs macro...")
+    macro = transform.transform_indicateurs_macro(ti_df, flux_df, debt_df, irl_df)
+    log_transform += f"indicateurs_macro : {len(macro):,} mois"
+
+    update("transform", "2. TRANSFORM", "Nettoyage & harmonisation", "neon-transform", "🟢 Termine", log_transform)
+
+    # ---- 3. CALCUL KPI ----
+    update("kpi", "3. CALCUL KPI", "Normalisation & score", "neon-kpi", "🔵 En cours...", "Calcul rendement brut, taux de vacance, effort fiscal, prix m2 median...")
+    score = transform.compute_kpi(transactions, loyers, foyers, parc)
+    top = score.dropna(subset=["score_attractivite"]).sort_values("score_attractivite", ascending=False).iloc[0]
+    log_kpi = (
+        f"score_attractivite : {len(score):,} communes evaluees\n"
+        f"annee de reference : {score['annee_ref'].iloc[0]}\n"
+        f"meilleur score : id_ville {int(top['id_ville'])} ({top['score_attractivite']:.1f}/100)"
+    )
+    update("kpi", "3. CALCUL KPI", "Normalisation & score", "neon-kpi", "🟢 Termine", log_kpi)
+
+    # ---- 4. LOAD ----
+    update("load", "4. LOAD", "PostgreSQL (Docker)", "neon-load", "🔵 En cours...", "Lecture du referentiel communes existant en base...")
+    with load_module.engine.connect() as conn:
+        valid_ids = set(conn.execute(load_module.text("SELECT id_ville FROM operationnel.communes")).scalars())
+
+    transactions = transactions[transactions["id_ville"].isin(valid_ids)]
+    outputs = {
+        "loyers": loyers[loyers["id_ville"].isin(valid_ids)],
+        "foyers_fiscaux": foyers[foyers["id_ville"].isin(valid_ids)],
+        "parc_immobilier": parc[parc["id_ville"].isin(valid_ids)],
+        "indicateurs_macro": macro,
+        "score_attractivite": score[score["id_ville"].isin(valid_ids)],
+    }
+
+    load_module.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    transactions.to_csv(load_module.DATA_DIR / "transactions.csv", index=False)
+    for table_name, df in outputs.items():
+        df.to_csv(load_module.DATA_DIR / f"{table_name}.csv", index=False)
+
+    log_load = f"Suppression des transactions {annee_min}-{derniere_annee} (historique anterieur conserve)...\n"
+    update("load", "4. LOAD", "PostgreSQL (Docker)", "neon-load", "🔵 En cours...", log_load)
+
+    # Une seule transaction pour tout le LOAD : si une etape echoue, tout est
+    # annule et la base reste dans son etat d'avant (pas de table videe sans
+    # avoir ete rechargee, cf. l'incident precedent sur cette meme page).
+    with load_module.engine.begin() as conn:
+        conn.execute(
+            load_module.text("DELETE FROM operationnel.transactions WHERE annee >= :annee_min"),
+            {"annee_min": annee_min},
+        )
+        transactions.to_sql(
+            name="transactions", con=conn, schema="operationnel",
+            if_exists="append", index=False, method="multi", chunksize=5000,
+        )
+        log_load += f"transactions : {len(transactions):,} lignes reinserees (fenetre {annee_min}-{derniere_annee})\n"
+        update("load", "4. LOAD", "PostgreSQL (Docker)", "neon-load", "🔵 En cours...", log_load)
+
+        for table_name in SMALL_TABLES:
+            conn.execute(load_module.text(f"TRUNCATE operationnel.{table_name}"))
+            outputs[table_name].to_sql(
+                name=table_name, con=conn, schema="operationnel",
+                if_exists="append", index=False, method="multi", chunksize=5000,
+            )
+            log_load += f"{table_name} : {len(outputs[table_name]):,} lignes inserees\n"
+            update("load", "4. LOAD", "PostgreSQL (Docker)", "neon-load", "🔵 En cours...", log_load)
+
+    update("load", "4. LOAD", "PostgreSQL (Docker)", "neon-load", "🟢 Termine", log_load + "Base synchronisee (historique anterieur conserve).")
+
+
+st.subheader("Rechargement allégé")
+st.caption(
+    "Recharge uniquement les N dernières années de transactions (plus rapide que le "
+    "pipeline complet) sans toucher à l'historique antérieur déjà en base. Les autres "
+    "tables (loyers, revenus fiscaux, vacance, score) sont toujours rechargées en entier "
+    "— elles sont petites, ça ne coûte rien de les refaire à chaque fois."
+)
+n_years = st.selectbox("Nombre d'années récentes à recharger", [3, 4, 5], index=1, key="n_years_recent")
+if st.button(f"Recharger les {n_years} dernières années"):
+    lock_conn = load_module.engine.connect()
+    acquired = lock_conn.execute(
+        load_module.text("SELECT pg_try_advisory_lock(:key)"), {"key": PIPELINE_LOCK_KEY}
+    ).scalar()
+
+    if not acquired:
+        st.error(
+            "Un chargement est deja en cours (verrou actif en base) - "
+            "attends qu'il se termine avant d'en relancer un."
+        )
+        lock_conn.close()
+    else:
+        try:
+            run_pipeline_recent(n_years)
+            st.success(f"Rechargement des {n_years} dernières années terminé avec succès.")
+        finally:
+            lock_conn.execute(load_module.text("SELECT pg_advisory_unlock(:key)"), {"key": PIPELINE_LOCK_KEY})
+            lock_conn.close()
+
+st.markdown("---")
+with st.expander("🔧 Outils de maintenance"):
+    st.caption(
+        "Si la base semble bloquée (dashboard qui ne répond plus, pipeline qui ne peut "
+        "plus démarrer), les connexions ci-dessous sont probablement la cause : une "
+        "session restée ouverte sans rien faire (`idle in transaction`), qui retient le "
+        "verrou du pipeline ou bloque des écritures."
+    )
+    if st.button("🔍 Chercher les connexions bloquées"):
+        with load_module.engine.connect() as conn:
+            stuck = conn.execute(load_module.text(
+                """
+                SELECT pid, state, query_start, now() - query_start AS duration,
+                       left(query, 150) AS query
+                FROM pg_stat_activity
+                WHERE datname = current_database()
+                  AND pid <> pg_backend_pid()
+                  AND state = 'idle in transaction'
+                ORDER BY query_start
+                """
+            )).mappings().all()
+        st.session_state["stuck_connections"] = stuck
+
+    stuck = st.session_state.get("stuck_connections", [])
+    if stuck:
+        st.dataframe(pd.DataFrame(stuck))
+        if st.button("🔓 Terminer ces connexions et libérer la base", type="primary"):
+            with load_module.engine.connect() as conn:
+                for row in stuck:
+                    conn.execute(load_module.text("SELECT pg_terminate_backend(:pid)"), {"pid": row["pid"]})
+                conn.commit()
+            st.success(f"{len(stuck)} connexion(s) bloquée(s) terminée(s). Le verrou est libéré.")
+            st.session_state["stuck_connections"] = []
+    elif "stuck_connections" in st.session_state:
+        st.info("Aucune connexion bloquée trouvée.")

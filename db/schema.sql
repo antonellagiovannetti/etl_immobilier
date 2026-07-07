@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS operationnel.communes (
 
 -- ── Données démographiques (geo.api.gouv.fr) ───────────────
 CREATE TABLE IF NOT EXISTS operationnel.demographics (
-    id              SERIAL PRIMARY KEY,
+    id_demographics              SERIAL PRIMARY KEY,
     id_ville        INTEGER         NOT NULL REFERENCES operationnel.communes(id_ville),
     code_insee      CHAR(5),
     code_region     VARCHAR(3),
@@ -52,7 +52,7 @@ CREATE INDEX IF NOT EXISTS idx_transactions_annee    ON operationnel.transaction
 
 -- ── Loyers médians par commune et année ────────────────────
 CREATE TABLE IF NOT EXISTS operationnel.loyers (
-    id              SERIAL PRIMARY KEY,
+    id_loyers              SERIAL PRIMARY KEY,
     id_ville        INTEGER     NOT NULL REFERENCES operationnel.communes(id_ville),
     annee           INTEGER     NOT NULL,
     loyer_m2_appartement    FLOAT,
@@ -65,7 +65,7 @@ CREATE INDEX IF NOT EXISTS idx_loyers_id_ville ON operationnel.loyers(id_ville);
 
 -- ── Foyers fiscaux par commune et année ────────────────────
 CREATE TABLE IF NOT EXISTS operationnel.foyers_fiscaux (
-    id                      SERIAL PRIMARY KEY,
+    id_foyers_fiscaux              SERIAL PRIMARY KEY,
     id_ville                INTEGER     NOT NULL REFERENCES operationnel.communes(id_ville),
     annee                   INTEGER     NOT NULL,
     revenu_fiscal_moyen     FLOAT,
@@ -78,7 +78,7 @@ CREATE INDEX IF NOT EXISTS idx_foyers_fiscaux_id_ville ON operationnel.foyers_fi
 
 -- ── Parc immobilier par commune et année ───────────────────
 CREATE TABLE IF NOT EXISTS operationnel.parc_immobilier (
-    id                      SERIAL PRIMARY KEY,
+    id_parc_immobilier              SERIAL PRIMARY KEY,
     id_ville                INTEGER     NOT NULL REFERENCES operationnel.communes(id_ville),
     annee                   INTEGER     NOT NULL,
     n_logements             FLOAT,
@@ -91,7 +91,7 @@ CREATE INDEX IF NOT EXISTS idx_parc_immobilier_id_ville ON operationnel.parc_imm
 
 -- ── Indicateurs macro nationaux (mensuel) ──────────────────
 CREATE TABLE IF NOT EXISTS operationnel.indicateurs_macro (
-    id                  SERIAL PRIMARY KEY,
+    id_indicateurs_macro              SERIAL PRIMARY KEY,
     annee               INTEGER     NOT NULL,
     mois                INTEGER,
     taux_interet        FLOAT,
@@ -103,7 +103,7 @@ CREATE TABLE IF NOT EXISTS operationnel.indicateurs_macro (
 
 -- ── Score d'attractivité par commune (table finale) ────────
 CREATE TABLE IF NOT EXISTS operationnel.score_attractivite (
-    id                      SERIAL PRIMARY KEY,
+    id_score_attractivite              SERIAL PRIMARY KEY,
     id_ville                INTEGER     NOT NULL REFERENCES operationnel.communes(id_ville),
     annee_ref               INTEGER     NOT NULL,
     prix_m2_median          FLOAT,

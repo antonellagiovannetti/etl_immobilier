@@ -96,11 +96,7 @@ def recuperer_infos_communes(
     retries: int = 3,
     verbose: bool = True,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Recupere les champs API utiles pour une liste de villes.
-
-    La fonction ne lit aucun fichier et n'ecrit aucun fichier. Elle renvoie une
-    structure exploitable par l'etape suivante du pipeline.
-    """
+    
     api_url = _get_api_url()
     fields = ",".join(API_FIELDS)
     data: list[dict[str, Any]] = []
@@ -161,14 +157,7 @@ def recuperer_infos_communes(
 
 
 def recuperer_toutes_communes(timeout: int = 30) -> pd.DataFrame:
-    """Recupere en un seul appel le referentiel complet des communes
-    francaises (code INSEE, departement, region, population, superficie,
-    coordonnees).
-
-    Contrairement a recuperer_infos_communes (qui cherche par nom de ville
-    et souffre des homonymes, ex. "Apremont" existe dans 7 departements),
-    cet appel est indexe par code INSEE : aucune ambiguite possible.
-    """
+    
     payload = _call_api(
         f"{_get_api_url()}",
         {"fields": ",".join(API_FIELDS), "format": "json"},
@@ -179,11 +168,7 @@ def recuperer_toutes_communes(timeout: int = 30) -> pd.DataFrame:
 
 
 def recuperer_irl(timeout: int = 60) -> pd.DataFrame:
-    """Recupere l'historique complet de l'IRL via l'API SDMX publique de l'INSEE
-    (serie BDM 001515333, mise a jour trimestrielle).
-
-    La fonction ne lit aucun fichier local et n'ecrit aucun fichier.
-    """
+    
     request = urllib.request.Request(f"{_require_env_var('INSEE_SDMX_URL')}/{IRL_SERIES_ID}")
     with urllib.request.urlopen(request, timeout=timeout) as response:
         xml_bytes = response.read()

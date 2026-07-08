@@ -12,12 +12,7 @@ import extract
 import load as load_module
 import transform
 
-# Verrou Postgres (session-level) empechant deux executions concurrentes du
-# pipeline : si l'onglet est ferme/rafraichi en plein chargement puis relance,
-# ou si quelqu'un clique deux fois, le deuxieme essai est bloque au lieu de
-# lancer un insert en double par-dessus le premier. Le verrou est
-# automatiquement libere par Postgres si la connexion qui le detient meurt
-# (crash, tab fermee), donc pas de risque de blocage permanent.
+
 PIPELINE_LOCK_KEY = 918273
 
 # Configuration de la page
@@ -265,16 +260,6 @@ if st.button("Lancer le pipeline complet", type="primary"):
 
 st.markdown("---")
 
-# ==========================================
-# RECHARGEMENT ALLEGE (N dernieres annees)
-# ==========================================
-# Ne touche ni communes ni demographics (leur TRUNCATE ferait cascader la
-# suppression sur toutes les tables qui les referencent par cle etrangere,
-# cf. db/schema.sql). Les transactions hors fenetre restent donc intactes :
-# seul le sous-ensemble recent est supprime puis reinsere. Les autres tables
-# (loyers/foyers_fiscaux/parc_immobilier/indicateurs_macro/score_attractivite)
-# sont petites (quelques dizaines de milliers de lignes max) et rechargees en
-# entier a chaque fois, comme dans le pipeline complet.
 SMALL_TABLES = ["loyers", "foyers_fiscaux", "parc_immobilier", "indicateurs_macro", "score_attractivite"]
 
 
@@ -372,9 +357,7 @@ def run_pipeline_recent(n_years: int) -> None:
     log_load = f"Suppression des transactions {annee_min}-{derniere_annee} (historique anterieur conserve)...\n"
     update("load", "4. LOAD", "PostgreSQL (Docker)", "neon-load", "🔵 En cours...", log_load)
 
-    # Une seule transaction pour tout le LOAD : si une etape echoue, tout est
-    # annule et la base reste dans son etat d'avant (pas de table videe sans
-    # avoir ete rechargee, cf. l'incident precedent sur cette meme page).
+
     with load_module.engine.begin() as conn:
         conn.execute(
             load_module.text("DELETE FROM operationnel.transactions WHERE annee >= :annee_min"),

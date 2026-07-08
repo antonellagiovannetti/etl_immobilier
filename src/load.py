@@ -73,8 +73,7 @@ def verify():
             result = conn.execute(text(f"SELECT COUNT(*) FROM operationnel.{table}"))
             print(f"  {table:<25} {result.scalar():>10,} lignes")
 
-# Meme cle que app/pages/2_ETL_demo.py : un seul chargement (script ou app)
-# peut tourner a la fois, peu importe par ou il est lance.
+
 PIPELINE_LOCK_KEY = 918273
 
 if __name__ == "__main__":

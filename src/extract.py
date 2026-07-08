@@ -83,10 +83,7 @@ def extract_transactions_npz(
     input_path: str | Path = RAW_TRANSACTIONS_PATH,
     columns: list[str] | None = None,
 ) -> pd.DataFrame:
-    """
-    Load raw real-estate transactions from a NPZ file and decode byte-packed
-    text columns into UTF-8 strings.
-    """
+
     selected_columns = columns or TRANSACTIONS_COLUMNS
     input_path = Path(input_path)
 
@@ -107,10 +104,7 @@ def extract_transactions_npz(
 
 
 def _download_bytes(url: str, timeout: int = 60, retries: int = 3) -> bytes:
-    # Les CDN de data.gouv.fr/INSEE renvoient parfois un 404/503 ponctuel sans
-    # rapport avec la disponibilite reelle du fichier (rate-limit, cache pas
-    # encore chaud) : un retry avec backoff evite de perdre tout le pipeline
-    # (~10 min) pour un aleas reseau d'une seconde.
+
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     for attempt in range(1, retries + 1):
         try:
@@ -129,10 +123,7 @@ def _data_gouv_resources(dataset_id: str) -> list[dict]:
 
 
 def extract_dvf(year: int) -> pd.DataFrame:
-    """
-    Telecharge les transactions DVF geolocalisees (Etalab/geo-dvf) pour une
-    annee donnee. Retourne un DataFrame brut, une ligne par mutation.
-    """
+
     url = f"{_require_env_var('GEO_DVF_BASE_URL')}/{year}/full.csv.gz"
     raw_bytes = _download_bytes(url, timeout=180)
     return pd.read_csv(
@@ -178,10 +169,7 @@ def extract_loyers_complement(year: int) -> pd.DataFrame:
 
 
 def extract_ircom() -> pd.DataFrame:
-    """
-    Telecharge le millesime IRCOM (revenus des menages par commune, DGFiP) le
-    plus recent disponible sur data.gouv.fr et retourne la feuille communes.
-    """
+
     resources = _data_gouv_resources(IRCOM_DATASET_ID)
     zip_resources = [r for r in resources if r["format"] == "zip"]
     latest = max(zip_resources, key=lambda r: r["last_modified"])
@@ -208,9 +196,7 @@ def extract_ircom() -> pd.DataFrame:
             )
     df = df.drop(columns=["col_a"])
     df["id_ville"] = df["id_ville"].astype(str).str.zfill(3)
-    # Le champ "Dep." IRCOM scinde parfois les gros departements en
-    # plusieurs sous-codes (13 -> 131/132, 75 -> 754..758) : les 2 premiers
-    # caracteres (3 pour les DOM 97x/98x) redonnent le vrai code departement.
+
     df["departement"] = df["departement"].astype(str).str.upper().apply(
         lambda dep: dep[:3] if dep[:2] in ("97", "98") else dep[:2]
     )
@@ -244,12 +230,7 @@ def extract_lovac() -> pd.DataFrame:
 
 
 def extract_webstat_series(path: str | Path) -> pd.DataFrame:
-    """
-    Parse un export CSV Webstat (Banque de France) telecharge manuellement :
-    6 lignes d'entete (titre, code serie, unite, magnitude, methode, source)
-    puis des lignes date;valeur. Retourne un DataFrame [date, valeur] avec la
-    valeur ramenee a l'unite de base (application du facteur de magnitude).
-    """
+
     path = Path(path)
     lines = path.read_text(encoding="utf-8-sig").splitlines()
 

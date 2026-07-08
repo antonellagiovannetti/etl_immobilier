@@ -76,9 +76,7 @@ def compute_global_id_ville(departement, id_ville) -> int:
 
 
 def transform_transactions(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Apply the business rules for the transactions transform phase.
-    """
+    
     df = df.copy()
 
     df["id_ville"] = [
@@ -159,11 +157,7 @@ def save_transactions_npz(
 
 
 def build_communes(communes_api_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Construit le referentiel communes.csv a partir du referentiel complet
-    des communes francaises (API.recuperer_toutes_communes). Indexe par
-    code INSEE, donc sans ambiguite d'homonyme.
-    """
+    
     df = communes_api_df.copy()
     deps_communes = df["code_insee"].map(split_insee_code)
     df["departement"] = [dep for dep, _ in deps_communes]
@@ -177,14 +171,7 @@ def build_communes(communes_api_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_demographics(communes_api_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Construit demographics.csv (population, superficie, densite) a partir du
-    meme referentiel que build_communes.
-
-    Modifications demandees :
-    1. Supprimer la colonne vefa si elle existe.
-    2. Supprimer les lignes ou population ou densite est vide/NaN ou egal a 0.
-    """
+    
     df = communes_api_df.copy()
 
     # 1 - Supprimer la colonne vefa si elle existe dans la source

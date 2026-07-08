@@ -62,11 +62,7 @@ def calculate_attractiveness_score(
     income_norm: pd.Series, 
     vacancy_norm: pd.Series
 ) -> pd.Series:
-    """
-    Calcule le score final d'attractivité (0-100) basé sur les pondérations du projet.
-    Attention: L'effort fiscal et la vacance doivent être inversés (plus ils sont bas, mieux c'est).
-    Pondération: 35% rendement + 25% effort (inv) + 20% richesse + 20% vacance (inv)
-    """
+
     # Inversion des critères négatifs (le meilleur/plus bas devient 100, le pire/plus haut devient 0)
     inverted_effort = 100 - effort_norm
     inverted_vacancy = 100 - vacancy_norm

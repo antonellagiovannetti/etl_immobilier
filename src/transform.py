@@ -55,23 +55,7 @@ OUTPUT_COLUMNS = [
 
 
 def compute_global_id_ville(departement, id_ville) -> int:
-    """
-    id_ville seul n'est pas unique au niveau national dans les sources
-    brutes (juste le numero de commune a l'interieur de son departement,
-    ex. "001" existe dans chaque departement). Le schema de la base garde
-    id_ville comme cle primaire simple (INTEGER) : on reconstruit donc ici
-    une valeur globalement unique a partir de departement + id_ville, sans
-    toucher au schema. Corse (2A/2B) et DOM (971-976) sont geres a part
-    pour rester dans des plages qui ne se recoupent pas.
 
-    Paris/Lyon/Marseille : les sources DVF/fiscales decoupent parfois ces
-    3 villes par arrondissement (75101-75120, 69381-69389, 13201-13216)
-    comme s'il s'agissait de communes distinctes, alors que le referentiel
-    officiel des communes (geo.api.gouv.fr) ne connait que la ville entiere
-    (75056, 69123, 13055). Sans ce regroupement, ces arrondissements ne
-    trouvent aucune correspondance dans communes.csv et sont silencieusement
-    perdus au chargement - ce qui ferait disparaitre Paris de l'analyse.
-    """
     dep = str(departement).strip().upper()
     commune_num = int(id_ville)
 
@@ -128,18 +112,7 @@ def transform_transactions(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def transform_dvf_supplement(dvf_df: pd.DataFrame, id_transaction_offset: int) -> pd.DataFrame:
-    """
-    Convertit un DataFrame geo-dvf brut (cf. extract_dvf) vers le meme format
-    brut que extract_transactions_npz (TRANSACTIONS_COLUMNS), pour pouvoir le
-    concatener AVANT transform_transactions et reutiliser telle quelle toute
-    sa logique (globalisation id_ville, calcul prix_m2, filtre qualite
-    2022-2024, dedoublonnage).
-
-    id_transaction_offset doit depasser le plus grand id_transaction deja
-    utilise par les donnees historiques (id_mutation geo-dvf est
-    alphanumerique, ex. "2025-1", incompatible avec la colonne INTEGER de
-    schema.sql) : on genere ici des identifiants entiers synthetiques.
-    """
+    
     df = dvf_df[
         dvf_df["nature_mutation"].isin(["Vente", "Vente en l'état futur d'achèvement"])
         & dvf_df["type_local"].isin(["Maison", "Appartement"])
@@ -238,11 +211,7 @@ def build_demographics(communes_api_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def split_insee_code(code: str) -> tuple[str, int]:
-    """
-    Decoupe un code INSEE commune (5 caracteres) en (departement, numero de
-    commune dans le departement). Gere la Corse (2A/2B, deja sur 2
-    caracteres) et les DOM (departement sur 3 caracteres, ex. 971).
-    """
+
     code = str(code).strip().zfill(5)
     if code[:2] in ("97", "98"):
         departement, commune = code[:3], code[3:]
@@ -279,11 +248,7 @@ def fill_numeric_medians(df: pd.DataFrame, columns: list[str] | None = None) -> 
 def transform_loyers(
     old_df: pd.DataFrame, complements: list[pd.DataFrame] | None = None
 ) -> pd.DataFrame:
-    """
-    Harmonise loyers.csv (2018/2022/2023) avec les millesimes complementaires
-    (Carte des loyers 2024/2025, cf. extract_loyers_complement) sur la cle
-    id_ville globale.
-    """
+
     old = old_df.rename(columns={"date": "annee"}).copy()
     old["departement"] = old["departement"].astype(str)
     old["id_ville"] = [
@@ -310,12 +275,7 @@ def transform_loyers(
 def transform_foyers_fiscaux(
     old_df: pd.DataFrame, ircom_df: pd.DataFrame | None = None
 ) -> pd.DataFrame:
-    """
-    Harmonise foyers_fiscaux.csv (2014-2022) avec le millesime IRCOM le plus
-    recent (revenus 2024, cf. extract_ircom). Les montants IRCOM sont en
-    milliers d'euros et totalises sur la commune : on les ramene a une
-    moyenne par foyer pour matcher le format existant.
-    """
+
     old = old_df.rename(columns={"date": "annee"}).copy()
     old["departement"] = old["departement"].astype(str)
     old["id_ville"] = [
@@ -409,13 +369,7 @@ def transform_indicateurs_macro(
     taux_endettement_df: pd.DataFrame,
     irl_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    Construit la table indicateurs_macro (nationale, mensuelle) a partir des
-    trois exports Webstat (cf. extract_webstat_series) et de l'IRL
-    (cf. API.recuperer_irl). Taux d'endettement et IRL sont trimestriels :
-    on les rattache au mois de fin de trimestre, le reste des mois de la
-    table reste NULL pour ces deux colonnes.
-    """
+
 
     def _monthly(df: pd.DataFrame, value_col: str) -> pd.DataFrame:
         out = df.dropna(subset=["valeur"]).copy()
@@ -468,20 +422,7 @@ def compute_kpi(
     parc_df: pd.DataFrame,
     annee_ref: int | None = None,
 ) -> pd.DataFrame:
-    """
-    Calcule les 4 KPI (rendement brut, taux de vacance, ratio d'effort
-    fiscal, prix m2 median) et le score d'attractivite (0-100) par commune,
-    conformement au mapping du cahier des charges (section 3 et 8).
 
-    Le prix m2 median, le nombre de transactions et le filtre qualite
-    (>= 5 transactions) portent sur la derniere annee disponible dans
-    transactions_df (2025 au moment d'ecrire ce code), pas sur une fenetre
-    glissante de plusieurs annees : le score doit refleter le marche actuel,
-    pas une moyenne datant potentiellement de 2 ou 3 ans. Une fenetre
-    multi-annees couvrirait plus de communes (les petites communes rurales
-    n'ont pas toujours 5 transactions/an), mais au prix d'une donnee moins
-    a jour - choix valide, mais ce n'est pas celui retenu ici.
-    """
     derniere_annee_transactions = int(transactions_df["annee"].max())
     window = transactions_df[transactions_df["annee"] == derniere_annee_transactions]
     agg = (
@@ -542,18 +483,7 @@ def compute_kpi(
 
 
 def run_full_pipeline(output_dir: str | Path = DEFAULT_FINAL_DIR) -> dict[str, dict[str, int]]:
-    """
-    Execute l'extraction + harmonisation des 8 sources et ecrit un CSV par
-    table dans output_dir (un fichier par table de db/schema.sql), au
-    format attendu par src/load.py (TABLES + DATA_DIR).
 
-    Les lignes dont l'id_ville ne correspond a aucune commune du
-    referentiel actuel (fusions de communes depuis 2014, arrondissements
-    de Marseille/Paris/Lyon presents dans les sources fiscales mais pas
-    dans le referentiel geographique, entrees hors-France) sont retirees
-    avant ecriture pour respecter les cles etrangeres de db/schema.sql.
-    Le detail (lignes gardees / ecartees) est retourne pour etre reporte.
-    """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     stats: dict[str, dict[str, int]] = {}
